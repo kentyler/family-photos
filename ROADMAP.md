@@ -82,15 +82,16 @@ Scope:
 
 - [~] Separate Google Drive authorization and consent.
 - [x] Request the least Drive access needed.
-- [~] Select and attach one or more folders.
+- [x] Select and attach one or more folders.
 - [x] Store Drive IDs rather than filesystem paths.
+- [~] Import and reconcile the existing photo catalog before asking members to recreate metadata.
 - [ ] Index supported files and basic metadata.
 - [ ] Handle revoked access and moved, renamed, or deleted folders.
 - [ ] Provide reconnect and rescan controls.
 
 Exit criteria: a user can connect a folder and the application reliably discovers supported photos and subfolders.
 
-Current status: **in progress**. Step 2 began on 2026-08-17 with a separate authorization-code flow for Google Drive. It requests only the non-sensitive `drive.file` scope recommended for per-file access, stores refresh tokens encrypted at rest under a key separate from the session secret, and records connection status per application user. Migrations `003` and `004` and the separate encryption secret are live on Render; production health and database-readiness checks pass. The Google Drive and Google Picker APIs are enabled, both identity and Drive callback URIs are registered on the OAuth client, and a Picker-only browser key restricted to the production site plus the Cloud project number are configured in Render. The application now includes Google Picker folder selection, server-side validation of selected folders through the Drive API, and durable Drive folder IDs. Fifteen automated tests and the production build pass. A live member folder selection remains before selection is marked complete; indexing, reconnect, and rescan behavior follow.
+Current status: **in progress**. Step 2 began on 2026-08-17 with a separate authorization-code flow for Google Drive. It requests only the non-sensitive `drive.file` scope recommended for per-file access, stores refresh tokens encrypted at rest under a key separate from the session secret, and records connection status per application user. Migrations `003` and `004` and the separate encryption secret are live on Render; production health and database-readiness checks pass. The Google Drive and Google Picker APIs are enabled, both identity and Drive callback URIs are registered on the OAuth client, and a Picker-only browser key restricted to the production site plus the Cloud project number are configured in Render. Live production use confirmed that administrators can add members and members can attach multiple Drive folders. Before broad indexing, the existing `photoapp` PostgreSQL catalog will be inventoried and imported so captions, people, genealogy, and other accumulated records are preserved and reconciled to Drive IDs. The legacy connection is documented locally, but its saved database password must be refreshed before the read-only inventory can proceed.
 
 ### Step 3 — Folder navigation and lightbox
 
@@ -183,6 +184,7 @@ These may be useful later, but they must build on the photo-person-family-tree l
 | 2026-08-17 | Use the non-sensitive `drive.file` scope with Google Picker instead of restricted `drive.readonly`. | Limits access to files explicitly shared with the application and avoids broad access to every file in a family member's Drive. |
 | 2026-08-17 | Encrypt Drive refresh tokens at rest with a deployment secret separate from the session secret. | Long-lived Drive access must remain revocable and must not be stored as plaintext or coupled to browser-session signing. |
 | 2026-08-17 | Use the Cloud project number as the Picker app ID and a browser-restricted Google API key for Picker. | Google requires the app ID with `drive.file`; restricting the public browser key to the production origin and Picker API limits misuse. |
+| 2026-08-17 | Import the legacy PostgreSQL catalog before inviting metadata re-entry. | The prior application already contains photo descriptions, people, genealogy, and related work that should be preserved and matched to Drive files. |
 
 ## Working agreement for maintaining this file
 
