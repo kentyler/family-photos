@@ -7,6 +7,7 @@ export type AppConfig = {
   googleClientId?: string;
   googleClientSecret?: string;
   bootstrapAdminEmail?: string;
+  tokenEncryptionKey?: string;
 };
 
 export function loadConfig(env = process.env): AppConfig {
@@ -23,6 +24,9 @@ export function loadConfig(env = process.env): AppConfig {
     if (!env.SESSION_SECRET || env.SESSION_SECRET.length < 32) {
       throw new Error("SESSION_SECRET must be at least 32 characters in production");
     }
+    if (!env.TOKEN_ENCRYPTION_KEY || env.TOKEN_ENCRYPTION_KEY.length < 32) {
+      throw new Error("TOKEN_ENCRYPTION_KEY must be at least 32 characters in production");
+    }
     if (!googleClientId || !googleClientSecret) {
       throw new Error("Google identity credentials are required in production");
     }
@@ -37,5 +41,6 @@ export function loadConfig(env = process.env): AppConfig {
     googleClientId,
     googleClientSecret,
     bootstrapAdminEmail: env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase(),
+    tokenEncryptionKey: env.TOKEN_ENCRYPTION_KEY,
   };
 }

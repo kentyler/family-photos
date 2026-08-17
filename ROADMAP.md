@@ -80,8 +80,8 @@ Goal: let an authenticated user attach existing folders without making the appli
 
 Scope:
 
-- [ ] Separate Google Drive authorization and consent.
-- [ ] Request the least Drive access needed.
+- [~] Separate Google Drive authorization and consent.
+- [x] Request the least Drive access needed.
 - [ ] Select and attach one or more folders.
 - [ ] Store Drive IDs rather than filesystem paths.
 - [ ] Index supported files and basic metadata.
@@ -89,6 +89,8 @@ Scope:
 - [ ] Provide reconnect and rescan controls.
 
 Exit criteria: a user can connect a folder and the application reliably discovers supported photos and subfolders.
+
+Current status: **in progress**. Step 2 began on 2026-08-17 with a separate authorization-code flow for Google Drive. It requests only the non-sensitive `drive.file` scope recommended for per-file access, stores refresh tokens encrypted at rest under a key separate from the session secret, and records connection status per application user. Google Picker folder selection, attached-folder records, indexing, reconnect, and rescan behavior are next.
 
 ### Step 3 — Folder navigation and lightbox
 
@@ -178,6 +180,8 @@ These may be useful later, but they must build on the photo-person-family-tree l
 | 2026-08-17 | Rotate the session after Google login and return `404` for archives outside the user's membership. | Prevents session fixation and avoids revealing whether an unshared private archive exists. |
 | 2026-08-17 | Separate application admission from archive membership: Google verifies identity, the application membership list permits entry, and archive membership controls data access. | Being a valid Google user must not imply access to this private family application or to every archive. |
 | 2026-08-17 | Bootstrap the first application administrator from a configured email only while the membership table is empty. | Solves initial setup without leaving a permanent configuration-based bypass after administrators can manage members themselves. |
+| 2026-08-17 | Use the non-sensitive `drive.file` scope with Google Picker instead of restricted `drive.readonly`. | Limits access to files explicitly shared with the application and avoids broad access to every file in a family member's Drive. |
+| 2026-08-17 | Encrypt Drive refresh tokens at rest with a deployment secret separate from the session secret. | Long-lived Drive access must remain revocable and must not be stored as plaintext or coupled to browser-session signing. |
 
 ## Working agreement for maintaining this file
 

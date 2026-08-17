@@ -5,8 +5,10 @@ import pg from "pg";
 import type { AppConfig } from "./config.js";
 import { createPostgresDataStore, type DataStore } from "./data.js";
 import { createGoogleIdentityClient, type IdentityClient } from "./oidc.js";
+import { createDriveAuthorizationClient, type DriveAuthorizationClient } from "./drive-oauth.js";
+import { encryptToken } from "./token-crypto.js";
 
-export type AppDependencies = { data?: DataStore; identity?: IdentityClient };
+export type AppDependencies = { data?: DataStore; identity?: IdentityClient; driveAuthorization?: DriveAuthorizationClient };
 
 function regenerate(request: Request) {
   return new Promise<void>((resolve, reject) => request.session.regenerate((error) => error ? reject(error) : resolve()));
@@ -28,6 +30,11 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
   const identity = supplied.identity ?? (
     config.googleClientId && config.googleClientSecret
       ? createGoogleIdentityClient({ clientId: config.googleClientId, clientSecret: config.googleClientSecret, appOrigin: config.appOrigin })
+      : undefined
+  );
+  const driveAuthorization = supplied.driveAuthorization ?? (
+    config.googleClientId && config.googleClientSecret
+      ? createDriveAuthorizationClient({ clientId: config.googleClientId, clientSecret: config.googleClientSecret, appOrigin: config.appOrigin })
       : undefined
   );
 
@@ -129,6 +136,31 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
     } catch (error) { next(error); }
   });
 
+  app.get("/drive/connect", requireMember, async (request, response, next) => {
+    if (!driveAuthorization) return response.status(503).json({ error: "drive_authorization_not_configured" });
+    try {
+      const started = await driveAuthorization.begin();
+      request.session.driveOauth = { state: started.state, codeVerifier: started.codeVerifier };
+      response.redirect(started.url);
+    } catch (error) { next(error); }
+  });
+
+  app.get("/drive/callback", requireMember, async (request, response, next) => {
+    const attempt = request.session.driveOauth;
+    delete request.session.driveOauth;
+    if (!driveAuthorization || !attempt || !config.tokenEncryptionKey) return response.status(400).json({ error: "invalid_drive_authorization_attempt" });
+    try {
+      const grant = await driveAuthorization.finish(new URL(request.originalUrl, config.appOrigin), attempt.state, attempt.codeVerifier);
+      await data!.saveDriveConnection(request.session.userId!, encryptToken(grant.refreshToken, config.tokenEncryptionKey), grant.scope);
+      response.redirect("/app?drive=connected");
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/drive/status", requireMember, async (request, response, next) => {
+    try { response.json({ connected: await data!.hasDriveConnection(request.session.userId!) }); }
+    catch (error) { next(error); }
+  });
+
   app.get("/api/admin/members", requireAdministrator, async (_request, response, next) => {
     try { response.json({ members: await data!.listApplicationMembers() }); }
     catch (error) { next(error); }
@@ -157,7 +189,8 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
   app.get("/app", requireMember, async (request, response, next) => {
     try {
       const isAdmin = await data!.getApplicationRole(request.session.userId!) === "administrator";
-      return response.type("html").send(page(`<p class="eyebrow">Private family archive</p><h1>Your photographs</h1><p>You are signed in. Archives shared with you will appear here.</p>${isAdmin ? '<p><a href="/admin/members">Manage application members</a></p>' : ""}<form method="post" action="/auth/logout"><button type="submit" class="secondary">Sign out</button></form>`));
+      const driveConnected = await data!.hasDriveConnection(request.session.userId!);
+      return response.type("html").send(page(`<p class="eyebrow">Private family archive</p><h1>Your photographs</h1><p>You are signed in. Archives shared with you will appear here.</p><p>${driveConnected ? "Google Drive is connected." : '<a class="button" href="/drive/connect">Connect Google Drive</a>'}</p>${isAdmin ? '<p><a href="/admin/members">Manage application members</a></p>' : ""}<form method="post" action="/auth/logout"><button type="submit" class="secondary">Sign out</button></form>`));
     } catch (error) { next(error); }
   });
 

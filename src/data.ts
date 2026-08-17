@@ -31,6 +31,8 @@ export interface DataStore {
   getApplicationRole(userId: string): Promise<ApplicationRole | null>;
   listApplicationMembers(): Promise<ApplicationMembership[]>;
   addApplicationMember(email: string, role: ApplicationRole, invitedBy: string): Promise<ApplicationMembership>;
+  saveDriveConnection(userId: string, encryptedRefreshToken: string, scope: string): Promise<void>;
+  hasDriveConnection(userId: string): Promise<boolean>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -119,6 +121,22 @@ export function createPostgresDataStore(pool: Pool): DataStore {
         RETURNING id, email, role, (user_id IS NOT NULL) AS joined
       `, [email.trim().toLowerCase(), role, invitedBy]);
       return result.rows[0]!;
+    },
+
+    async saveDriveConnection(userId, encryptedRefreshToken, scope) {
+      await pool.query(`
+        INSERT INTO drive_connections (user_id, encrypted_refresh_token, granted_scope)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id) DO UPDATE SET
+          encrypted_refresh_token = EXCLUDED.encrypted_refresh_token,
+          granted_scope = EXCLUDED.granted_scope,
+          updated_at = now()
+      `, [userId, encryptedRefreshToken, scope]);
+    },
+
+    async hasDriveConnection(userId) {
+      const result = await pool.query("SELECT 1 FROM drive_connections WHERE user_id = $1", [userId]);
+      return Boolean(result.rowCount);
     },
 
     async listArchives(userId) {

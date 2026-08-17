@@ -7,5 +7,9 @@ declare module "express-session" {
       state: string;
       codeVerifier: string;
     };
+    driveOauth?: {
+      state: string;
+      codeVerifier: string;
+    };
   }
 }

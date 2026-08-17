@@ -5,10 +5,11 @@ import { createApp } from "../src/app.js";
 import type { ApplicationMembership, DataStore, IdentityProfile } from "../src/data.js";
 import type { IdentityClient } from "../src/oidc.js";
 
-const config = { nodeEnv: "test", port: 3000, appOrigin: "http://localhost:3000", sessionSecret: "test-secret-long-enough-for-session-signing" };
+const config = { nodeEnv: "test", port: 3000, appOrigin: "http://localhost:3000", sessionSecret: "test-secret-long-enough-for-session-signing", tokenEncryptionKey: "test-token-encryption-key-long-enough" };
 
 function fakeData(applicationRole: "administrator" | "member" = "administrator"): DataStore {
   const members: ApplicationMembership[] = [{ id: "membership-1", email: "ken@example.com", role: applicationRole, joined: true }];
+  let driveConnected = false;
   return {
     async isReady() { return true; },
     async admitGoogleUser(_profile: IdentityProfile) { return { id: "user-1", email: "ken@example.com", displayName: "Ken", avatarUrl: null }; },
@@ -20,6 +21,8 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
       members.push(member);
       return member;
     },
+    async saveDriveConnection() { driveConnected = true; },
+    async hasDriveConnection() { return driveConnected; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -127,3 +130,31 @@ test("ordinary members cannot manage the application membership list", () => wit
   const response = await fetch(`${origin}/api/admin/members`, { headers: { cookie: sessionCookie } });
   assert.equal(response.status, 403);
 }, { data: fakeData("member"), identity }));
+
+test("Drive authorization is separate and stores an encrypted refresh token", () => {
+  const data = fakeData();
+  let storedToken = "";
+  data.saveDriveConnection = async (_userId, encryptedToken) => { storedToken = encryptedToken; };
+  const driveAuthorization = {
+    async begin() { return { url: "https://accounts.google.com/o/oauth2/auth?scope=https://www.googleapis.com/auth/drive.file", state: "drive-state", codeVerifier: "drive-verifier" }; },
+    async finish(_url: URL, state: string, verifier: string) {
+      assert.equal(state, "drive-state");
+      assert.equal(verifier, "drive-verifier");
+      return { refreshToken: "plain-refresh-token", scope: "https://www.googleapis.com/auth/drive.file" };
+    },
+  };
+  return withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    const connect = await fetch(`${origin}/drive/connect`, { redirect: "manual", headers: { cookie: sessionCookie } });
+    assert.equal(connect.status, 302);
+    assert.match(connect.headers.get("location") ?? "", /drive\.file/);
+    const callback = await fetch(`${origin}/drive/callback?code=drive-code&state=drive-state`, {
+      redirect: "manual",
+      headers: { cookie: cookie(connect) },
+    });
+    assert.equal(callback.status, 302);
+    assert.equal(callback.headers.get("location"), "/app?drive=connected");
+    assert(storedToken);
+    assert.doesNotMatch(storedToken, /plain-refresh-token/);
+  }, { data, identity, driveAuthorization });
+});

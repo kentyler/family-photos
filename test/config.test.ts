@@ -15,6 +15,7 @@ test("production accepts the complete deployment environment", () => {
     SESSION_SECRET: "a-secure-session-secret-with-32-characters",
     GOOGLE_CLIENT_ID: "client-id",
     GOOGLE_CLIENT_SECRET: "client-secret",
+    TOKEN_ENCRYPTION_KEY: "a-separate-token-encryption-key-with-32-characters",
     BOOTSTRAP_ADMIN_EMAIL: "ADMIN@EXAMPLE.COM",
   });
   assert.equal(config.bootstrapAdminEmail, "admin@example.com");
