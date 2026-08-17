@@ -25,6 +25,14 @@ export type ApplicationMembership = {
 };
 
 export type AttachedFolder = { id: string; driveFolderId: string; name: string; attachedAt: string };
+export type IndexedDriveItem = {
+  driveFileId: string;
+  parentDriveId: string;
+  name: string;
+  mimeType: string;
+  modifiedTime: string | null;
+  sizeBytes: number | null;
+};
 
 export interface DataStore {
   isReady(): Promise<boolean>;
@@ -38,6 +46,9 @@ export interface DataStore {
   getEncryptedDriveRefreshToken(userId: string): Promise<string | null>;
   attachDriveFolder(userId: string, driveFolderId: string, name: string): Promise<AttachedFolder>;
   listAttachedFolders(userId: string): Promise<AttachedFolder[]>;
+  getAttachedFolder(userId: string, folderId: string): Promise<AttachedFolder | null>;
+  replaceIndexedDriveItems(userId: string, folderId: string, items: IndexedDriveItem[]): Promise<number>;
+  countIndexedDriveItems(userId: string, folderId: string): Promise<number>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -169,6 +180,48 @@ export function createPostgresDataStore(pool: Pool): DataStore {
         FROM attached_drive_folders WHERE user_id = $1 ORDER BY name, id
       `, [userId]);
       return result.rows.map((row) => ({ id: row.id, driveFolderId: row.drive_folder_id, name: row.name, attachedAt: row.attached_at.toISOString() }));
+    },
+
+    async getAttachedFolder(userId, folderId) {
+      const result = await pool.query<{ id: string; drive_folder_id: string; name: string; attached_at: Date }>(`
+        SELECT id, drive_folder_id, name, attached_at
+        FROM attached_drive_folders WHERE id = $1 AND user_id = $2
+      `, [folderId, userId]);
+      const row = result.rows[0];
+      return row ? { id: row.id, driveFolderId: row.drive_folder_id, name: row.name, attachedAt: row.attached_at.toISOString() } : null;
+    },
+
+    async replaceIndexedDriveItems(userId, folderId, items) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const folder = await client.query("SELECT 1 FROM attached_drive_folders WHERE id = $1 AND user_id = $2 FOR UPDATE", [folderId, userId]);
+        if (!folder.rowCount) throw new Error("Attached folder not found");
+        await client.query("DELETE FROM indexed_drive_items WHERE attached_folder_id = $1", [folderId]);
+        for (const item of items) {
+          await client.query(`
+            INSERT INTO indexed_drive_items
+              (attached_folder_id, drive_file_id, parent_drive_id, name, mime_type, modified_time, size_bytes)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+          `, [folderId, item.driveFileId, item.parentDriveId, item.name, item.mimeType, item.modifiedTime, item.sizeBytes]);
+        }
+        await client.query("UPDATE attached_drive_folders SET last_scanned_at = now() WHERE id = $1", [folderId]);
+        await client.query("COMMIT");
+        return items.length;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally { client.release(); }
+    },
+
+    async countIndexedDriveItems(userId, folderId) {
+      const result = await pool.query<{ count: string }>(`
+        SELECT count(*)
+        FROM indexed_drive_items i
+        JOIN attached_drive_folders f ON f.id = i.attached_folder_id
+        WHERE f.user_id = $1 AND f.id = $2
+      `, [userId, folderId]);
+      return Number(result.rows[0]?.count ?? 0);
     },
 
     async listArchives(userId) {

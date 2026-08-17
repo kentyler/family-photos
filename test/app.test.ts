@@ -32,6 +32,9 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
       return folder;
     },
     async listAttachedFolders() { return folders; },
+    async getAttachedFolder(_userId, folderId) { return folders.find((folder) => folder.id === folderId) ?? null; },
+    async replaceIndexedDriveItems(_userId, _folderId, items) { return items.length; },
+    async countIndexedDriveItems() { return 0; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -153,6 +156,7 @@ test("Drive authorization is separate and stores an encrypted refresh token", ()
     },
     async getAccessToken() { return "access-token"; },
     async getFolder(_accessToken: string, folderId: string) { return { id: folderId, name: "Family Album" }; },
+    async listChildren() { return []; },
   };
   return withServer(async (origin) => {
     const sessionCookie = await signIn(origin);
@@ -181,6 +185,7 @@ test("a connected member can attach a Picker-selected Drive folder", () => {
       assert.equal(folderId, "drive-folder-1");
       return { id: folderId, name: "Grandma's Photos" };
     },
+    async listChildren() { return []; },
   };
   return withServer(async (origin) => {
     const sessionCookie = await signIn(origin);

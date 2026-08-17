@@ -7,6 +7,7 @@ export interface DriveAuthorizationClient {
   finish(currentUrl: URL, expectedState: string, codeVerifier: string): Promise<{ refreshToken: string; scope: string }>;
   getAccessToken(refreshToken: string): Promise<string>;
   getFolder(accessToken: string, folderId: string): Promise<{ id: string; name: string }>;
+  listChildren(accessToken: string, folderId: string): Promise<Array<{ id: string; name: string; mimeType: string; modifiedTime: string | null; sizeBytes: number | null }>>;
 }
 
 export function createDriveAuthorizationClient(options: { clientId: string; clientSecret: string; appOrigin: string }): DriveAuthorizationClient {
@@ -50,6 +51,32 @@ export function createDriveAuthorizationClient(options: { clientId: string; clie
         throw new Error("The selected Drive item is not an available folder");
       }
       return { id: file.id, name: file.name };
+    },
+    async listChildren(accessToken, folderId) {
+      const files: Array<{ id: string; name: string; mimeType: string; modifiedTime: string | null; sizeBytes: number | null }> = [];
+      let pageToken: string | undefined;
+      do {
+        const parameters = new URLSearchParams({
+          q: `'${folderId.replaceAll("'", "\\'")}' in parents and trashed = false`,
+          fields: "nextPageToken,files(id,name,mimeType,modifiedTime,size)",
+          pageSize: "1000",
+        });
+        if (pageToken) parameters.set("pageToken", pageToken);
+        const response = await fetch(`https://www.googleapis.com/drive/v3/files?${parameters}`, { headers: { authorization: `Bearer ${accessToken}` } });
+        if (!response.ok) throw new Error(`Google Drive listing failed (${response.status})`);
+        const page = await response.json() as { nextPageToken?: string; files?: Array<{ id?: string; name?: string; mimeType?: string; modifiedTime?: string; size?: string }> };
+        for (const file of page.files ?? []) {
+          if (file.id && file.name && file.mimeType) files.push({
+            id: file.id,
+            name: file.name,
+            mimeType: file.mimeType,
+            modifiedTime: file.modifiedTime ?? null,
+            sizeBytes: file.size && Number.isSafeInteger(Number(file.size)) ? Number(file.size) : null,
+          });
+        }
+        pageToken = page.nextPageToken;
+      } while (pageToken);
+      return files;
     },
   };
 }

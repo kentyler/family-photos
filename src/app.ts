@@ -190,13 +190,46 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
     } catch (error) { next(error); }
   });
 
+  app.post("/api/drive/folders/:folderId/rescan", requireMember, async (request, response, next) => {
+    const folderId = Array.isArray(request.params.folderId) ? request.params.folderId[0] : request.params.folderId;
+    if (!folderId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(folderId)) {
+      return response.status(404).json({ error: "folder_not_found" });
+    }
+    try {
+      const folder = await data!.getAttachedFolder(request.session.userId!, folderId);
+      if (!folder) return response.status(404).json({ error: "folder_not_found" });
+      const accessToken = await getDriveAccessToken(request.session.userId!);
+      if (!accessToken || !driveAuthorization) return response.status(409).json({ error: "drive_connection_required" });
+      const pending = [folder.driveFolderId];
+      const visited = new Set<string>();
+      const indexed = [];
+      while (pending.length) {
+        const parentDriveId = pending.shift()!;
+        if (visited.has(parentDriveId)) continue;
+        visited.add(parentDriveId);
+        for (const item of await driveAuthorization.listChildren(accessToken, parentDriveId)) {
+          if (item.mimeType === "application/vnd.google-apps.folder") {
+            pending.push(item.id);
+          } else if (item.mimeType.startsWith("image/") || item.mimeType.startsWith("video/")) {
+            indexed.push({ driveFileId: item.id, parentDriveId, name: item.name, mimeType: item.mimeType, modifiedTime: item.modifiedTime, sizeBytes: item.sizeBytes });
+          }
+        }
+      }
+      const count = await data!.replaceIndexedDriveItems(request.session.userId!, folder.id, indexed);
+      return request.is("application/x-www-form-urlencoded")
+        ? response.redirect(303, "/drive/folders?scan=complete")
+        : response.json({ indexed: count });
+    } catch (error) { next(error); }
+  });
+
   app.get("/drive/folders", requireMember, async (request, response, next) => {
     try {
       const connected = await data!.hasDriveConnection(request.session.userId!);
       if (!connected) return response.redirect("/drive/connect");
       const folders = await data!.listAttachedFolders(request.session.userId!);
+      const foldersWithCounts = await Promise.all(folders.map(async (folder) => ({ folder, count: await data!.countIndexedDriveItems(request.session.userId!, folder.id) })));
       const list = folders.length
-        ? `<ul>${folders.map((folder) => `<li>${escapeHtml(folder.name)}</li>`).join("")}</ul>`
+        ? `<ul>${foldersWithCounts.map(({ folder, count }) => `<li><strong>${escapeHtml(folder.name)}</strong> — ${count} photo${count === 1 ? "" : "s"} or video${count === 1 ? "" : "s"} indexed <form class="inline" method="post" action="/api/drive/folders/${folder.id}/rescan"><button class="secondary" type="submit">${count ? "Rescan" : "Scan folder"}</button></form></li>`).join("")}</ul>`
         : "<p>No folders attached yet.</p>";
       const pickerReady = Boolean(config.googlePickerApiKey && config.googleCloudProjectNumber);
       return response.type("html").send(page(`<p class="eyebrow">Google Drive</p><h1>Photo folders</h1>${list}${pickerReady ? '<button id="choose-folder" type="button">Choose a folder</button><p id="picker-message" class="muted"></p>' : '<p>Folder selection needs one final Google Cloud setting.</p>'}<p><a href="/app">Back to archive</a></p>${pickerReady ? pickerScript() : ""}`));
@@ -250,7 +283,7 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
 }
 
 function page(content: string) {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Family Photo Archive</title><style>body{font:18px system-ui;max-width:48rem;margin:12vh auto;padding:0 1.5rem;color:#29251f;background:#f3eee5}main{background:#fff;padding:clamp(2rem,6vw,4rem);border-radius:1.2rem;box-shadow:0 18px 50px #352d2018}h1{font:700 clamp(2.5rem,7vw,4.6rem)/1.05 Georgia,serif;margin:.25rem 0 1.5rem;max-width:12ch}p{line-height:1.6}.eyebrow{color:#765b38;font-size:.8rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}.muted{color:#6d655b;font-size:.88rem;margin-top:1.5rem}.button,button{display:inline-block;border:0;border-radius:.6rem;padding:.85rem 1.15rem;background:#493a29;color:white;font:600 .95rem system-ui;text-decoration:none;cursor:pointer}.secondary{background:#e9e0d4;color:#493a29}form{display:flex;gap:.75rem;flex-wrap:wrap;align-items:end;margin:2rem 0}label{display:grid;gap:.35rem;font-size:.85rem;font-weight:700}input,select{font:inherit;padding:.65rem;border:1px solid #b9aa96;border-radius:.4rem}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.7rem;border-bottom:1px solid #e9e0d4;font-size:.9rem}</style></head><body><main>${content}</main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Family Photo Archive</title><style>body{font:18px system-ui;max-width:48rem;margin:12vh auto;padding:0 1.5rem;color:#29251f;background:#f3eee5}main{background:#fff;padding:clamp(2rem,6vw,4rem);border-radius:1.2rem;box-shadow:0 18px 50px #352d2018}h1{font:700 clamp(2.5rem,7vw,4.6rem)/1.05 Georgia,serif;margin:.25rem 0 1.5rem;max-width:12ch}p,li{line-height:1.6}.eyebrow{color:#765b38;font-size:.8rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}.muted{color:#6d655b;font-size:.88rem;margin-top:1.5rem}.button,button{display:inline-block;border:0;border-radius:.6rem;padding:.85rem 1.15rem;background:#493a29;color:white;font:600 .95rem system-ui;text-decoration:none;cursor:pointer}.secondary{background:#e9e0d4;color:#493a29}form{display:flex;gap:.75rem;flex-wrap:wrap;align-items:end;margin:2rem 0}form.inline{display:inline;margin-left:.6rem}form.inline button{padding:.45rem .7rem}label{display:grid;gap:.35rem;font-size:.85rem;font-weight:700}input,select{font:inherit;padding:.65rem;border:1px solid #b9aa96;border-radius:.4rem}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.7rem;border-bottom:1px solid #e9e0d4;font-size:.9rem}</style></head><body><main>${content}</main></body></html>`;
 }
 
 function escapeHtml(value: string) {
