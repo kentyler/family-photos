@@ -153,11 +153,11 @@ test("Drive authorization is separate and stores an encrypted refresh token", ()
   let storedToken = "";
   data.saveDriveConnection = async (_userId, encryptedToken) => { storedToken = encryptedToken; };
   const driveAuthorization = {
-    async begin() { return { url: "https://accounts.google.com/o/oauth2/auth?scope=https://www.googleapis.com/auth/drive.file", state: "drive-state", codeVerifier: "drive-verifier" }; },
+    async begin() { return { url: "https://accounts.google.com/o/oauth2/auth?scope=https://www.googleapis.com/auth/drive.readonly", state: "drive-state", codeVerifier: "drive-verifier" }; },
     async finish(_url: URL, state: string, verifier: string) {
       assert.equal(state, "drive-state");
       assert.equal(verifier, "drive-verifier");
-      return { refreshToken: "plain-refresh-token", scope: "https://www.googleapis.com/auth/drive.file" };
+      return { refreshToken: "plain-refresh-token", scope: "https://www.googleapis.com/auth/drive.readonly" };
     },
     async getAccessToken() { return "access-token"; },
     async getFolder(_accessToken: string, folderId: string) { return { id: folderId, name: "Family Album" }; },
@@ -167,7 +167,7 @@ test("Drive authorization is separate and stores an encrypted refresh token", ()
     const sessionCookie = await signIn(origin);
     const connect = await fetch(`${origin}/drive/connect`, { redirect: "manual", headers: { cookie: sessionCookie } });
     assert.equal(connect.status, 302);
-    assert.match(connect.headers.get("location") ?? "", /drive\.file/);
+    assert.match(connect.headers.get("location") ?? "", /drive\.readonly/);
     const callback = await fetch(`${origin}/drive/callback?code=drive-code&state=drive-state`, {
       redirect: "manual",
       headers: { cookie: cookie(connect) },
@@ -183,7 +183,7 @@ test("a connected member can attach a Picker-selected Drive folder", () => {
   const data = fakeData();
   const driveAuthorization = {
     async begin() { return { url: "https://accounts.google.com", state: "drive-state", codeVerifier: "drive-verifier" }; },
-    async finish() { return { refreshToken: "refresh-token", scope: "https://www.googleapis.com/auth/drive.file" }; },
+    async finish() { return { refreshToken: "refresh-token", scope: "https://www.googleapis.com/auth/drive.readonly" }; },
     async getAccessToken(refreshToken: string) { assert.equal(refreshToken, "refresh-token"); return "access-token"; },
     async getFolder(accessToken: string, folderId: string) {
       assert.equal(accessToken, "access-token");

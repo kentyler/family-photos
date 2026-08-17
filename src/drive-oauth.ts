@@ -1,6 +1,6 @@
 import * as oauth from "openid-client";
 
-export const DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+export const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 
 export interface DriveAuthorizationClient {
   begin(): Promise<{ url: string; state: string; codeVerifier: string }>;
@@ -21,7 +21,7 @@ export function createDriveAuthorizationClient(options: { clientId: string; clie
       const state = oauth.randomState();
       const url = oauth.buildAuthorizationUrl(await getConfiguration(), {
         redirect_uri: redirectUri,
-        scope: DRIVE_FILE_SCOPE,
+        scope: DRIVE_READONLY_SCOPE,
         access_type: "offline",
         prompt: "consent",
         include_granted_scopes: "false",
@@ -34,7 +34,7 @@ export function createDriveAuthorizationClient(options: { clientId: string; clie
     async finish(currentUrl, expectedState, codeVerifier) {
       const tokens = await oauth.authorizationCodeGrant(await getConfiguration(), currentUrl, { expectedState, pkceCodeVerifier: codeVerifier });
       if (!tokens.refresh_token) throw new Error("Google Drive did not return a refresh token");
-      return { refreshToken: tokens.refresh_token, scope: tokens.scope ?? DRIVE_FILE_SCOPE };
+      return { refreshToken: tokens.refresh_token, scope: tokens.scope ?? DRIVE_READONLY_SCOPE };
     },
     async getAccessToken(refreshToken) {
       const tokens = await oauth.refreshTokenGrant(await getConfiguration(), refreshToken);
