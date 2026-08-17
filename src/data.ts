@@ -35,6 +35,7 @@ export type IndexedDriveItem = {
   modifiedTime: string | null;
   sizeBytes: number | null;
 };
+export type DriveScanJob = { id: string; status: "pending" | "running" | "completed" | "failed"; foldersScanned: number; itemsDiscovered: number; matchedItems: number | null; unmatchedItems: number | null; ambiguousItems: number | null; errorMessage: string | null };
 
 export interface DataStore {
   isReady(): Promise<boolean>;
@@ -53,6 +54,9 @@ export interface DataStore {
   countIndexedDriveItems(userId: string, folderId: string): Promise<number>;
   countLegacyDriveMatches(userId: string, folderId: string): Promise<number>;
   reconcileLegacyDriveItems(userId: string, folderId: string): Promise<{ matched: number; exactPath: number; uniqueNameSize: number; unmatched: number; ambiguous: number }>;
+  createDriveScanJob(userId: string, folderId: string): Promise<DriveScanJob>;
+  updateDriveScanJob(jobId: string, update: Partial<Omit<DriveScanJob, "id">>): Promise<void>;
+  getLatestDriveScanJob(userId: string, folderId: string): Promise<DriveScanJob | null>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -277,6 +281,38 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       return { matched: exactPath + uniqueNameSize, exactPath, uniqueNameSize, unmatched, ambiguous };
     },
 
+    async createDriveScanJob(userId, folderId) {
+      await pool.query("UPDATE drive_scan_jobs SET status='failed', error_message='Superseded by a new scan', completed_at=now() WHERE attached_folder_id=$1 AND status='pending'", [folderId]);
+      const result = await pool.query(`
+        INSERT INTO drive_scan_jobs (user_id, attached_folder_id) VALUES ($1,$2)
+        RETURNING id, status, folders_scanned, items_discovered, matched_items, unmatched_items, ambiguous_items, error_message
+      `, [userId, folderId]);
+      return mapScanJob(result.rows[0]!);
+    },
+
+    async updateDriveScanJob(jobId, update) {
+      const fields: string[] = [];
+      const values: unknown[] = [];
+      const mapping: Record<string, string> = { status: "status", foldersScanned: "folders_scanned", itemsDiscovered: "items_discovered", matchedItems: "matched_items", unmatchedItems: "unmatched_items", ambiguousItems: "ambiguous_items", errorMessage: "error_message" };
+      for (const [key, column] of Object.entries(mapping)) {
+        if (key in update) { values.push(update[key as keyof typeof update]); fields.push(`${column}=$${values.length}`); }
+      }
+      if (update.status === "running") fields.push("started_at=now()");
+      if (update.status === "completed" || update.status === "failed") fields.push("completed_at=now()");
+      if (!fields.length) return;
+      values.push(jobId);
+      await pool.query(`UPDATE drive_scan_jobs SET ${fields.join(",")} WHERE id=$${values.length}`, values);
+    },
+
+    async getLatestDriveScanJob(userId, folderId) {
+      const result = await pool.query(`
+        SELECT j.id, j.status, j.folders_scanned, j.items_discovered, j.matched_items, j.unmatched_items, j.ambiguous_items, j.error_message
+        FROM drive_scan_jobs j JOIN attached_drive_folders f ON f.id=j.attached_folder_id
+        WHERE f.user_id=$1 AND f.id=$2 ORDER BY j.created_at DESC LIMIT 1
+      `, [userId, folderId]);
+      return result.rows[0] ? mapScanJob(result.rows[0]) : null;
+    },
+
     async listArchives(userId) {
       const result = await pool.query<{ id: string; name: string; role: ArchiveMembership["role"] }>(`
         SELECT a.id, a.name, m.role
@@ -298,4 +334,8 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       return result.rows[0] ?? null;
     },
   };
+}
+
+function mapScanJob(row: any): DriveScanJob {
+  return { id: row.id, status: row.status, foldersScanned: row.folders_scanned, itemsDiscovered: row.items_discovered, matchedItems: row.matched_items, unmatchedItems: row.unmatched_items, ambiguousItems: row.ambiguous_items, errorMessage: row.error_message };
 }

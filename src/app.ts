@@ -3,7 +3,7 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import pg from "pg";
 import type { AppConfig } from "./config.js";
-import { createPostgresDataStore, type DataStore } from "./data.js";
+import { createPostgresDataStore, type DataStore, type DriveScanJob } from "./data.js";
 import { createGoogleIdentityClient, type IdentityClient } from "./oidc.js";
 import { createDriveAuthorizationClient, type DriveAuthorizationClient } from "./drive-oauth.js";
 import { decryptToken, encryptToken } from "./token-crypto.js";
@@ -190,6 +190,37 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
     } catch (error) { next(error); }
   });
 
+  let scanQueue = Promise.resolve();
+  const enqueueScan = (jobId: string, userId: string, folder: Awaited<ReturnType<DataStore["getAttachedFolder"]>>) => {
+    scanQueue = scanQueue.then(async () => {
+      if (!folder) return;
+      try {
+        await data!.updateDriveScanJob(jobId, { status: "running" });
+        const accessToken = await getDriveAccessToken(userId);
+        if (!accessToken || !driveAuthorization) throw new Error("Google Drive connection must be renewed");
+        const pending = [{ driveId: folder.driveFolderId, relativePath: "" }];
+        const visited = new Set<string>();
+        const indexed = [];
+        while (pending.length) {
+          const { driveId: parentDriveId, relativePath: parentPath } = pending.shift()!;
+          if (visited.has(parentDriveId)) continue;
+          visited.add(parentDriveId);
+          for (const item of await driveAuthorization.listChildren(accessToken, parentDriveId)) {
+            if (item.mimeType === "application/vnd.google-apps.folder") pending.push({ driveId: item.id, relativePath: parentPath ? `${parentPath}/${item.name}` : item.name });
+            else if (item.mimeType.startsWith("image/") || item.mimeType.startsWith("video/")) indexed.push({ driveFileId: item.id, parentDriveId, name: item.name, mimeType: item.mimeType, relativePath: parentPath ? `${parentPath}/${item.name}` : item.name, md5Checksum: item.md5Checksum, modifiedTime: item.modifiedTime, sizeBytes: item.sizeBytes });
+          }
+          if (visited.size % 25 === 0) await data!.updateDriveScanJob(jobId, { foldersScanned: visited.size, itemsDiscovered: indexed.length });
+        }
+        await data!.replaceIndexedDriveItems(userId, folder.id, indexed);
+        const result = await data!.reconcileLegacyDriveItems(userId, folder.id);
+        await data!.updateDriveScanJob(jobId, { status: "completed", foldersScanned: visited.size, itemsDiscovered: indexed.length, matchedItems: result.matched, unmatchedItems: result.unmatched, ambiguousItems: result.ambiguous });
+      } catch (error) {
+        console.error("Drive scan failed", error);
+        await data!.updateDriveScanJob(jobId, { status: "failed", errorMessage: error instanceof Error ? error.message.slice(0, 500) : "Drive scan failed" });
+      }
+    });
+  };
+
   app.post("/api/drive/folders/:folderId/rescan", requireMember, async (request, response, next) => {
     const folderId = Array.isArray(request.params.folderId) ? request.params.folderId[0] : request.params.folderId;
     if (!folderId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(folderId)) {
@@ -198,28 +229,11 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
     try {
       const folder = await data!.getAttachedFolder(request.session.userId!, folderId);
       if (!folder) return response.status(404).json({ error: "folder_not_found" });
-      const accessToken = await getDriveAccessToken(request.session.userId!);
-      if (!accessToken || !driveAuthorization) return response.status(409).json({ error: "drive_connection_required" });
-      const pending = [{ driveId: folder.driveFolderId, relativePath: "" }];
-      const visited = new Set<string>();
-      const indexed = [];
-      while (pending.length) {
-        const { driveId: parentDriveId, relativePath: parentPath } = pending.shift()!;
-        if (visited.has(parentDriveId)) continue;
-        visited.add(parentDriveId);
-        for (const item of await driveAuthorization.listChildren(accessToken, parentDriveId)) {
-          if (item.mimeType === "application/vnd.google-apps.folder") {
-            pending.push({ driveId: item.id, relativePath: parentPath ? `${parentPath}/${item.name}` : item.name });
-          } else if (item.mimeType.startsWith("image/") || item.mimeType.startsWith("video/")) {
-            indexed.push({ driveFileId: item.id, parentDriveId, name: item.name, mimeType: item.mimeType, relativePath: parentPath ? `${parentPath}/${item.name}` : item.name, md5Checksum: item.md5Checksum, modifiedTime: item.modifiedTime, sizeBytes: item.sizeBytes });
-          }
-        }
-      }
-      const count = await data!.replaceIndexedDriveItems(request.session.userId!, folder.id, indexed);
-      const reconciliation = await data!.reconcileLegacyDriveItems(request.session.userId!, folder.id);
+      const job = await data!.createDriveScanJob(request.session.userId!, folder.id);
+      enqueueScan(job.id, request.session.userId!, folder);
       return request.is("application/x-www-form-urlencoded")
-        ? response.redirect(303, `/drive/folders?scan=complete&matched=${reconciliation.matched}&unmatched=${reconciliation.unmatched}&ambiguous=${reconciliation.ambiguous}`)
-        : response.json({ indexed: count, reconciliation });
+        ? response.redirect(303, "/drive/folders?scan=queued")
+        : response.status(202).json({ job });
     } catch (error) { next(error); }
   });
 
@@ -228,12 +242,13 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
       const connected = await data!.hasDriveConnection(request.session.userId!);
       if (!connected) return response.redirect("/drive/connect");
       const folders = await data!.listAttachedFolders(request.session.userId!);
-      const foldersWithCounts = await Promise.all(folders.map(async (folder) => ({ folder, count: await data!.countIndexedDriveItems(request.session.userId!, folder.id), matched: await data!.countLegacyDriveMatches(request.session.userId!, folder.id) })));
+      const foldersWithCounts = await Promise.all(folders.map(async (folder) => ({ folder, count: await data!.countIndexedDriveItems(request.session.userId!, folder.id), matched: await data!.countLegacyDriveMatches(request.session.userId!, folder.id), job: await data!.getLatestDriveScanJob(request.session.userId!, folder.id) })));
+      const active = foldersWithCounts.some(({ job }) => job?.status === "pending" || job?.status === "running");
       const list = folders.length
-        ? `<ul>${foldersWithCounts.map(({ folder, count, matched }) => `<li><strong>${escapeHtml(folder.name)}</strong> — ${count} indexed, ${matched} matched to the legacy catalog <form class="inline" method="post" action="/api/drive/folders/${folder.id}/rescan"><button class="secondary" type="submit">${count ? "Rescan and reconcile" : "Scan and reconcile"}</button></form></li>`).join("")}</ul>`
+        ? `<ul>${foldersWithCounts.map(({ folder, count, matched, job }) => `<li><strong>${escapeHtml(folder.name)}</strong> — ${count} indexed, ${matched} matched to the legacy catalog. ${scanStatus(job)} ${(job?.status === "pending" || job?.status === "running") ? "" : `<form class="inline" method="post" action="/api/drive/folders/${folder.id}/rescan"><button class="secondary" type="submit">${count ? "Rescan and reconcile" : "Scan and reconcile"}</button></form>`}</li>`).join("")}</ul>`
         : "<p>No folders attached yet.</p>";
       const pickerReady = Boolean(config.googlePickerApiKey && config.googleCloudProjectNumber);
-      return response.type("html").send(page(`<p class="eyebrow">Google Drive</p><h1>Photo folders</h1>${list}${pickerReady ? '<button id="choose-folder" type="button">Choose a folder</button><p id="picker-message" class="muted"></p>' : '<p>Folder selection needs one final Google Cloud setting.</p>'}<p><a href="/app">Back to archive</a></p>${pickerReady ? pickerScript() : ""}`));
+      return response.type("html").send(page(`<p class="eyebrow">Google Drive</p><h1>Photo folders</h1>${active ? '<p class="muted">Scanning continues in the background. This page refreshes automatically.</p>' : ""}${list}${pickerReady ? '<button id="choose-folder" type="button">Choose a folder</button><p id="picker-message" class="muted"></p>' : '<p>Folder selection needs one final Google Cloud setting.</p>'}<p><a href="/app">Back to archive</a></p>${active ? '<script>setTimeout(()=>location.reload(),10000)</script>' : ""}${pickerReady ? pickerScript() : ""}`));
     } catch (error) { next(error); }
   });
 
@@ -289,6 +304,14 @@ function page(content: string) {
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]!);
+}
+
+function scanStatus(job: DriveScanJob | null) {
+  if (!job) return "";
+  if (job.status === "pending") return "Scan queued.";
+  if (job.status === "running") return `Scanning: ${job.foldersScanned} folders, ${job.itemsDiscovered} items found.`;
+  if (job.status === "completed") return `Last scan completed: ${job.matchedItems ?? 0} matched, ${job.unmatchedItems ?? 0} unmatched, ${job.ambiguousItems ?? 0} ambiguous.`;
+  return `Last scan failed: ${escapeHtml(job.errorMessage ?? "unknown error")}.`;
 }
 
 function pickerScript() {

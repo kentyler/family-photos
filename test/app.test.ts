@@ -37,6 +37,9 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async countIndexedDriveItems() { return 0; },
     async countLegacyDriveMatches() { return 0; },
     async reconcileLegacyDriveItems() { return { matched: 0, exactPath: 0, uniqueNameSize: 0, unmatched: 0, ambiguous: 0 }; },
+    async createDriveScanJob() { return { id: "job-1", status: "pending", foldersScanned: 0, itemsDiscovered: 0, matchedItems: null, unmatchedItems: null, ambiguousItems: null, errorMessage: null }; },
+    async updateDriveScanJob() {},
+    async getLatestDriveScanJob() { return null; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
