@@ -45,17 +45,17 @@ Goal: establish a deployable application shell and trustworthy user identity.
 
 Scope:
 
-- [~] Sign in with a Google account using OpenID Connect scopes only.
-- [~] Persistent application users and server-side sessions.
-- [~] Login, logout, current-user, and authentication-status endpoints.
-- [~] Login screen and authenticated application shell.
-- [ ] Enforce authorization for all private application data.
-- [~] Add archive membership and roles (`owner`, `administrator`, `member`).
+- [x] Sign in with a Google account using OpenID Connect scopes only.
+- [x] Persistent application users and server-side sessions.
+- [x] Login, logout, current-user, and authentication-status endpoints.
+- [x] Login screen and authenticated application shell.
+- [x] Enforce authorization for all private application data.
+- [x] Add archive membership and roles (`owner`, `administrator`, `member`).
 - [x] Choose and configure the production hosting environment.
 - [x] Define account removal, privacy, and session-expiration behavior.
 - [~] Establish production migrations, secrets, and deployment checks.
 
-Current status: **in progress**. On 2026-08-17 the hosted stack was selected and the deployable application shell was started. The schema establishes users, archives, role-constrained memberships, and PostgreSQL-backed sessions. Google OIDC integration and authorization enforcement are the next implementation work; no Drive scope is included in identity login.
+Current status: **in progress**. On 2026-08-17 the hosted stack and deployable shell were completed, followed by Google OIDC identity, persistent user upsert, session rotation and logout invalidation, the authenticated shell, and membership-scoped archive reads. Automated tests cover login, current-user access, archive isolation, and logout. Production provisioning, secrets, migration execution, and a live Google login/deployment check remain before Step 1 exits; no Drive scope is included in identity login.
 
 Selected stack:
 
@@ -174,6 +174,7 @@ These may be useful later, but they must build on the photo-person-family-tree l
 | 2026-08-17 | Use versioned SQL migrations and the `pg` driver. | The initial relational model is small; explicit SQL keeps deployment behavior transparent and avoids committing to a larger ORM prematurely. |
 | 2026-08-17 | Use `openid-client` for Google OIDC and PostgreSQL-backed `express-session` sessions. | Standards-based OIDC keeps login limited to identity scopes, while server-side sessions make logout and revocation enforceable by the application. |
 | 2026-08-17 | Sessions expire after 30 idle days; account removal deletes profile data after ownership is transferred or the archive is deleted. | Provides a practical return-visit window while preventing orphaned archives and defining the privacy boundary early. |
+| 2026-08-17 | Rotate the session after Google login and return `404` for archives outside the user's membership. | Prevents session fixation and avoids revealing whether an unshared private archive exists. |
 
 ## Working agreement for maintaining this file
 

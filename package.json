@@ -9,7 +9,7 @@
     "dev": "node --watch --import tsx src/server.ts",
     "start": "node dist/server.js",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test test/**/*.test.ts",
+    "test": "node --import tsx --test test/app.test.ts",
     "migrate": "node --import tsx scripts/migrate.ts"
   },
   "dependencies": {

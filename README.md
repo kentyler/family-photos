@@ -9,3 +9,5 @@ A private hosted application for connecting family photographs in Google Drive w
 3. Enable Corepack, then run `pnpm install`, `pnpm run migrate`, and `pnpm run dev`.
 
 Google login uses identity scopes only. Google Drive authorization is intentionally separate and will be implemented in Step 2.
+
+For Google login, create an OAuth web client and register `http://localhost:3000/auth/google/callback` for local development. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `APP_ORIGIN` in the environment. Production uses the same callback path on the deployed origin.
