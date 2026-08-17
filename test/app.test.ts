@@ -10,6 +10,7 @@ const config = { nodeEnv: "test", port: 3000, appOrigin: "http://localhost:3000"
 function fakeData(applicationRole: "administrator" | "member" = "administrator"): DataStore {
   const members: ApplicationMembership[] = [{ id: "membership-1", email: "ken@example.com", role: applicationRole, joined: true }];
   return {
+    async isReady() { return true; },
     async admitGoogleUser(_profile: IdentityProfile) { return { id: "user-1", email: "ken@example.com", displayName: "Ken", avatarUrl: null }; },
     async getUser(userId) { return userId === "user-1" ? { id: userId, email: "ken@example.com", displayName: "Ken", avatarUrl: null } : null; },
     async getApplicationRole(userId) { return userId === "user-1" ? applicationRole : null; },
@@ -64,6 +65,12 @@ test("health endpoint reports ready", () => withServer(async (origin) => {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { status: "ok" });
 }));
+
+test("readiness verifies the application data store", () => withServer(async (origin) => {
+  const response = await fetch(`${origin}/ready`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { status: "ready" });
+}, { data: fakeData() }));
 
 test("current user is private without a session", () => withServer(async (origin) => {
   const response = await fetch(`${origin}/api/me`);

@@ -25,6 +25,7 @@ export type ApplicationMembership = {
 };
 
 export interface DataStore {
+  isReady(): Promise<boolean>;
   admitGoogleUser(profile: IdentityProfile, bootstrapAdminEmail?: string): Promise<User | null>;
   getUser(userId: string): Promise<User | null>;
   getApplicationRole(userId: string): Promise<ApplicationRole | null>;
@@ -36,6 +37,11 @@ export interface DataStore {
 
 export function createPostgresDataStore(pool: Pool): DataStore {
   return {
+    async isReady() {
+      const result = await pool.query<{ ready: number }>("SELECT 1 AS ready");
+      return result.rows[0]?.ready === 1;
+    },
+
     async admitGoogleUser(profile, bootstrapAdminEmail) {
       const client = await pool.connect();
       try {

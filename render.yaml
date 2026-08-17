@@ -6,7 +6,7 @@ services:
     buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm run build
     preDeployCommand: pnpm run migrate
     startCommand: pnpm start
-    healthCheckPath: /health
+    healthCheckPath: /ready
     envVars:
       - key: NODE_VERSION
         value: 22.18.0

@@ -63,6 +63,15 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
   };
 
   app.get("/health", (_request, response) => response.json({ status: "ok" }));
+  app.get("/ready", async (_request, response) => {
+    try {
+      return data && await data.isReady()
+        ? response.json({ status: "ready" })
+        : response.status(503).json({ status: "unavailable" });
+    } catch {
+      return response.status(503).json({ status: "unavailable" });
+    }
+  });
 
   app.get("/auth/google", async (request, response, next) => {
     if (!identity) return response.status(503).json({ error: "google_identity_not_configured" });

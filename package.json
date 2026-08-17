@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.19.0",
   "engines": { "node": ">=22" },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "node --watch --import tsx src/server.ts",
     "start": "node dist/server.js",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test test/app.test.ts",
+    "test": "node --import tsx --test test/app.test.ts test/config.test.ts",
     "migrate": "node --import tsx scripts/migrate.ts"
   },
   "dependencies": {
