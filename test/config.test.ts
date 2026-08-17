@@ -23,3 +23,12 @@ test("production accepts the complete deployment environment", () => {
 test("application origin must be an origin without a path", () => {
   assert.throws(() => loadConfig({ APP_ORIGIN: "https://photos.example.com/path" }), /APP_ORIGIN/);
 });
+
+test("copied Google credentials discard surrounding whitespace", () => {
+  const config = loadConfig({
+    GOOGLE_CLIENT_ID: "  client-id\r\n",
+    GOOGLE_CLIENT_SECRET: "\tclient-secret\n",
+  });
+  assert.equal(config.googleClientId, "client-id");
+  assert.equal(config.googleClientSecret, "client-secret");
+});
