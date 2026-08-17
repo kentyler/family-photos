@@ -21,7 +21,7 @@ Identity requests only `openid email profile`. Do not add a Google Drive scope d
 ## Render setup
 
 1. Push `main` to GitHub.
-2. In Render, create a Blueprint from the `family-photos` repository.
+2. In Render, create or sync a Blueprint from the `family-photos` repository. The Blueprint expects the existing `familyphotos` PostgreSQL database and creates the `familyphotos-web` service.
 3. Review the paid `starter` web service and `basic-256mb` PostgreSQL database before confirming creation.
 4. Set the prompted values:
    - `APP_ORIGIN`: the HTTPS origin with no trailing path.
