@@ -200,25 +200,26 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
       if (!folder) return response.status(404).json({ error: "folder_not_found" });
       const accessToken = await getDriveAccessToken(request.session.userId!);
       if (!accessToken || !driveAuthorization) return response.status(409).json({ error: "drive_connection_required" });
-      const pending = [folder.driveFolderId];
+      const pending = [{ driveId: folder.driveFolderId, relativePath: "" }];
       const visited = new Set<string>();
       const indexed = [];
       while (pending.length) {
-        const parentDriveId = pending.shift()!;
+        const { driveId: parentDriveId, relativePath: parentPath } = pending.shift()!;
         if (visited.has(parentDriveId)) continue;
         visited.add(parentDriveId);
         for (const item of await driveAuthorization.listChildren(accessToken, parentDriveId)) {
           if (item.mimeType === "application/vnd.google-apps.folder") {
-            pending.push(item.id);
+            pending.push({ driveId: item.id, relativePath: parentPath ? `${parentPath}/${item.name}` : item.name });
           } else if (item.mimeType.startsWith("image/") || item.mimeType.startsWith("video/")) {
-            indexed.push({ driveFileId: item.id, parentDriveId, name: item.name, mimeType: item.mimeType, modifiedTime: item.modifiedTime, sizeBytes: item.sizeBytes });
+            indexed.push({ driveFileId: item.id, parentDriveId, name: item.name, mimeType: item.mimeType, relativePath: parentPath ? `${parentPath}/${item.name}` : item.name, md5Checksum: item.md5Checksum, modifiedTime: item.modifiedTime, sizeBytes: item.sizeBytes });
           }
         }
       }
       const count = await data!.replaceIndexedDriveItems(request.session.userId!, folder.id, indexed);
+      const reconciliation = await data!.reconcileLegacyDriveItems(request.session.userId!, folder.id);
       return request.is("application/x-www-form-urlencoded")
-        ? response.redirect(303, "/drive/folders?scan=complete")
-        : response.json({ indexed: count });
+        ? response.redirect(303, `/drive/folders?scan=complete&matched=${reconciliation.matched}&unmatched=${reconciliation.unmatched}&ambiguous=${reconciliation.ambiguous}`)
+        : response.json({ indexed: count, reconciliation });
     } catch (error) { next(error); }
   });
 
@@ -227,9 +228,9 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
       const connected = await data!.hasDriveConnection(request.session.userId!);
       if (!connected) return response.redirect("/drive/connect");
       const folders = await data!.listAttachedFolders(request.session.userId!);
-      const foldersWithCounts = await Promise.all(folders.map(async (folder) => ({ folder, count: await data!.countIndexedDriveItems(request.session.userId!, folder.id) })));
+      const foldersWithCounts = await Promise.all(folders.map(async (folder) => ({ folder, count: await data!.countIndexedDriveItems(request.session.userId!, folder.id), matched: await data!.countLegacyDriveMatches(request.session.userId!, folder.id) })));
       const list = folders.length
-        ? `<ul>${foldersWithCounts.map(({ folder, count }) => `<li><strong>${escapeHtml(folder.name)}</strong> — ${count} photo${count === 1 ? "" : "s"} or video${count === 1 ? "" : "s"} indexed <form class="inline" method="post" action="/api/drive/folders/${folder.id}/rescan"><button class="secondary" type="submit">${count ? "Rescan" : "Scan folder"}</button></form></li>`).join("")}</ul>`
+        ? `<ul>${foldersWithCounts.map(({ folder, count, matched }) => `<li><strong>${escapeHtml(folder.name)}</strong> — ${count} indexed, ${matched} matched to the legacy catalog <form class="inline" method="post" action="/api/drive/folders/${folder.id}/rescan"><button class="secondary" type="submit">${count ? "Rescan and reconcile" : "Scan and reconcile"}</button></form></li>`).join("")}</ul>`
         : "<p>No folders attached yet.</p>";
       const pickerReady = Boolean(config.googlePickerApiKey && config.googleCloudProjectNumber);
       return response.type("html").send(page(`<p class="eyebrow">Google Drive</p><h1>Photo folders</h1>${list}${pickerReady ? '<button id="choose-folder" type="button">Choose a folder</button><p id="picker-message" class="muted"></p>' : '<p>Folder selection needs one final Google Cloud setting.</p>'}<p><a href="/app">Back to archive</a></p>${pickerReady ? pickerScript() : ""}`));

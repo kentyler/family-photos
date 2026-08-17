@@ -30,6 +30,8 @@ export type IndexedDriveItem = {
   parentDriveId: string;
   name: string;
   mimeType: string;
+  relativePath: string;
+  md5Checksum: string | null;
   modifiedTime: string | null;
   sizeBytes: number | null;
 };
@@ -49,6 +51,8 @@ export interface DataStore {
   getAttachedFolder(userId: string, folderId: string): Promise<AttachedFolder | null>;
   replaceIndexedDriveItems(userId: string, folderId: string, items: IndexedDriveItem[]): Promise<number>;
   countIndexedDriveItems(userId: string, folderId: string): Promise<number>;
+  countLegacyDriveMatches(userId: string, folderId: string): Promise<number>;
+  reconcileLegacyDriveItems(userId: string, folderId: string): Promise<{ matched: number; exactPath: number; uniqueNameSize: number; unmatched: number; ambiguous: number }>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -201,9 +205,9 @@ export function createPostgresDataStore(pool: Pool): DataStore {
         for (const item of items) {
           await client.query(`
             INSERT INTO indexed_drive_items
-              (attached_folder_id, drive_file_id, parent_drive_id, name, mime_type, modified_time, size_bytes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-          `, [folderId, item.driveFileId, item.parentDriveId, item.name, item.mimeType, item.modifiedTime, item.sizeBytes]);
+              (attached_folder_id, drive_file_id, parent_drive_id, name, mime_type, relative_path, md5_checksum, modified_time, size_bytes)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `, [folderId, item.driveFileId, item.parentDriveId, item.name, item.mimeType, item.relativePath, item.md5Checksum, item.modifiedTime, item.sizeBytes]);
         }
         await client.query("UPDATE attached_drive_folders SET last_scanned_at = now() WHERE id = $1", [folderId]);
         await client.query("COMMIT");
@@ -222,6 +226,55 @@ export function createPostgresDataStore(pool: Pool): DataStore {
         WHERE f.user_id = $1 AND f.id = $2
       `, [userId, folderId]);
       return Number(result.rows[0]?.count ?? 0);
+    },
+
+    async countLegacyDriveMatches(userId, folderId) {
+      const result = await pool.query<{ count: string }>(`
+        SELECT count(*) FROM legacy_drive_matches m
+        JOIN indexed_drive_items i ON i.id=m.indexed_item_id
+        JOIN attached_drive_folders f ON f.id=i.attached_folder_id
+        WHERE f.user_id=$1 AND f.id=$2
+      `, [userId, folderId]);
+      return Number(result.rows[0]?.count ?? 0);
+    },
+
+    async reconcileLegacyDriveItems(userId, folderId) {
+      const indexed = await pool.query<{ id: string; name: string; relative_path: string; size_bytes: string | null }>(`
+        SELECT i.id, i.name, i.relative_path, i.size_bytes
+        FROM indexed_drive_items i JOIN attached_drive_folders f ON f.id=i.attached_folder_id
+        WHERE f.user_id=$1 AND f.id=$2 ORDER BY i.id
+      `, [userId, folderId]);
+      const client = await pool.connect();
+      let exactPath = 0, uniqueNameSize = 0, unmatched = 0, ambiguous = 0;
+      try {
+        await client.query("BEGIN");
+        await client.query("DELETE FROM legacy_drive_matches WHERE indexed_item_id IN (SELECT id FROM indexed_drive_items WHERE attached_folder_id=$1)", [folderId]);
+        for (const item of indexed.rows) {
+          const candidates = await client.query<{ id: number; original_path: string | null }>(`
+            SELECT id, original_path FROM legacy_catalog.files
+            WHERE lower(filename)=lower($1) AND size_bytes IS NOT DISTINCT FROM $2::bigint
+          `, [item.name, item.size_bytes]);
+          const normalizedRelative = item.relative_path.replaceAll("\\", "/").toLowerCase();
+          const exact = candidates.rows.filter((candidate) => {
+            const legacyPath = candidate.original_path?.replaceAll("\\", "/").toLowerCase();
+            return legacyPath === normalizedRelative || legacyPath?.endsWith(`/${normalizedRelative}`);
+          });
+          let match: { id: number } | undefined;
+          let method: "exact_path_size" | "unique_name_size" | undefined;
+          if (exact.length === 1) { match = exact[0]; method = "exact_path_size"; exactPath += 1; }
+          else if (exact.length > 1) ambiguous += 1;
+          else if (candidates.rows.length === 1) { match = candidates.rows[0]; method = "unique_name_size"; uniqueNameSize += 1; }
+          else if (candidates.rows.length > 1) ambiguous += 1;
+          else unmatched += 1;
+          if (match && method) await client.query(
+            "INSERT INTO legacy_drive_matches (indexed_item_id, legacy_file_id, match_method) VALUES ($1,$2,$3)",
+            [item.id, match.id, method],
+          );
+        }
+        await client.query("COMMIT");
+      } catch (error) { await client.query("ROLLBACK"); throw error; }
+      finally { client.release(); }
+      return { matched: exactPath + uniqueNameSize, exactPath, uniqueNameSize, unmatched, ambiguous };
     },
 
     async listArchives(userId) {

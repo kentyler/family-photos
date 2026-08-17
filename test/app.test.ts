@@ -35,6 +35,8 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async getAttachedFolder(_userId, folderId) { return folders.find((folder) => folder.id === folderId) ?? null; },
     async replaceIndexedDriveItems(_userId, _folderId, items) { return items.length; },
     async countIndexedDriveItems() { return 0; },
+    async countLegacyDriveMatches() { return 0; },
+    async reconcileLegacyDriveItems() { return { matched: 0, exactPath: 0, uniqueNameSize: 0, unmatched: 0, ambiguous: 0 }; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
