@@ -10,6 +10,8 @@ const config = { nodeEnv: "test", port: 3000, appOrigin: "http://localhost:3000"
 function fakeData(applicationRole: "administrator" | "member" = "administrator"): DataStore {
   const members: ApplicationMembership[] = [{ id: "membership-1", email: "ken@example.com", role: applicationRole, joined: true }];
   let driveConnected = false;
+  let encryptedDriveToken: string | null = null;
+  const folders: Array<{ id: string; driveFolderId: string; name: string; attachedAt: string }> = [];
   return {
     async isReady() { return true; },
     async admitGoogleUser(_profile: IdentityProfile) { return { id: "user-1", email: "ken@example.com", displayName: "Ken", avatarUrl: null }; },
@@ -21,8 +23,15 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
       members.push(member);
       return member;
     },
-    async saveDriveConnection() { driveConnected = true; },
+    async saveDriveConnection(_userId, encryptedToken) { driveConnected = true; encryptedDriveToken = encryptedToken; },
     async hasDriveConnection() { return driveConnected; },
+    async getEncryptedDriveRefreshToken() { return encryptedDriveToken; },
+    async attachDriveFolder(_userId, driveFolderId, name) {
+      const folder = { id: `folder-${folders.length + 1}`, driveFolderId, name, attachedAt: "2026-08-17T00:00:00.000Z" };
+      folders.push(folder);
+      return folder;
+    },
+    async listAttachedFolders() { return folders; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -142,6 +151,8 @@ test("Drive authorization is separate and stores an encrypted refresh token", ()
       assert.equal(verifier, "drive-verifier");
       return { refreshToken: "plain-refresh-token", scope: "https://www.googleapis.com/auth/drive.file" };
     },
+    async getAccessToken() { return "access-token"; },
+    async getFolder(_accessToken: string, folderId: string) { return { id: folderId, name: "Family Album" }; },
   };
   return withServer(async (origin) => {
     const sessionCookie = await signIn(origin);
@@ -156,5 +167,31 @@ test("Drive authorization is separate and stores an encrypted refresh token", ()
     assert.equal(callback.headers.get("location"), "/app?drive=connected");
     assert(storedToken);
     assert.doesNotMatch(storedToken, /plain-refresh-token/);
+  }, { data, identity, driveAuthorization });
+});
+
+test("a connected member can attach a Picker-selected Drive folder", () => {
+  const data = fakeData();
+  const driveAuthorization = {
+    async begin() { return { url: "https://accounts.google.com", state: "drive-state", codeVerifier: "drive-verifier" }; },
+    async finish() { return { refreshToken: "refresh-token", scope: "https://www.googleapis.com/auth/drive.file" }; },
+    async getAccessToken(refreshToken: string) { assert.equal(refreshToken, "refresh-token"); return "access-token"; },
+    async getFolder(accessToken: string, folderId: string) {
+      assert.equal(accessToken, "access-token");
+      assert.equal(folderId, "drive-folder-1");
+      return { id: folderId, name: "Grandma's Photos" };
+    },
+  };
+  return withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    const connect = await fetch(`${origin}/drive/connect`, { redirect: "manual", headers: { cookie: sessionCookie } });
+    await fetch(`${origin}/drive/callback?code=drive-code&state=drive-state`, { redirect: "manual", headers: { cookie: cookie(connect) } });
+    const attached = await fetch(`${origin}/api/drive/folders`, {
+      method: "POST",
+      headers: { cookie: sessionCookie, "content-type": "application/json" },
+      body: JSON.stringify({ folderId: "drive-folder-1" }),
+    });
+    assert.equal(attached.status, 201);
+    assert.deepEqual(await attached.json(), { id: "folder-1", driveFolderId: "drive-folder-1", name: "Grandma's Photos", attachedAt: "2026-08-17T00:00:00.000Z" });
   }, { data, identity, driveAuthorization });
 });

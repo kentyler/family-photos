@@ -6,7 +6,7 @@ import type { AppConfig } from "./config.js";
 import { createPostgresDataStore, type DataStore } from "./data.js";
 import { createGoogleIdentityClient, type IdentityClient } from "./oidc.js";
 import { createDriveAuthorizationClient, type DriveAuthorizationClient } from "./drive-oauth.js";
-import { encryptToken } from "./token-crypto.js";
+import { decryptToken, encryptToken } from "./token-crypto.js";
 
 export type AppDependencies = { data?: DataStore; identity?: IdentityClient; driveAuthorization?: DriveAuthorizationClient };
 
@@ -157,8 +157,50 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
   });
 
   app.get("/api/drive/status", requireMember, async (request, response, next) => {
-    try { response.json({ connected: await data!.hasDriveConnection(request.session.userId!) }); }
+    try { response.json({ connected: await data!.hasDriveConnection(request.session.userId!), folders: await data!.listAttachedFolders(request.session.userId!) }); }
     catch (error) { next(error); }
+  });
+
+  const getDriveAccessToken = async (userId: string) => {
+    if (!driveAuthorization || !config.tokenEncryptionKey) return null;
+    const encryptedToken = await data!.getEncryptedDriveRefreshToken(userId);
+    return encryptedToken ? driveAuthorization.getAccessToken(decryptToken(encryptedToken, config.tokenEncryptionKey)) : null;
+  };
+
+  app.get("/api/drive/picker", requireMember, async (request, response, next) => {
+    if (!config.googlePickerApiKey || !config.googleCloudProjectNumber) {
+      return response.status(503).json({ error: "google_picker_not_configured" });
+    }
+    try {
+      const accessToken = await getDriveAccessToken(request.session.userId!);
+      return accessToken
+        ? response.json({ accessToken, developerKey: config.googlePickerApiKey, appId: config.googleCloudProjectNumber })
+        : response.status(409).json({ error: "drive_connection_required" });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/drive/folders", requireMember, async (request, response, next) => {
+    const folderId = typeof request.body.folderId === "string" ? request.body.folderId.trim() : "";
+    if (!folderId || folderId.length > 256) return response.status(400).json({ error: "valid_folder_id_required" });
+    try {
+      const accessToken = await getDriveAccessToken(request.session.userId!);
+      if (!accessToken || !driveAuthorization) return response.status(409).json({ error: "drive_connection_required" });
+      const folder = await driveAuthorization.getFolder(accessToken, folderId);
+      return response.status(201).json(await data!.attachDriveFolder(request.session.userId!, folder.id, folder.name));
+    } catch (error) { next(error); }
+  });
+
+  app.get("/drive/folders", requireMember, async (request, response, next) => {
+    try {
+      const connected = await data!.hasDriveConnection(request.session.userId!);
+      if (!connected) return response.redirect("/drive/connect");
+      const folders = await data!.listAttachedFolders(request.session.userId!);
+      const list = folders.length
+        ? `<ul>${folders.map((folder) => `<li>${escapeHtml(folder.name)}</li>`).join("")}</ul>`
+        : "<p>No folders attached yet.</p>";
+      const pickerReady = Boolean(config.googlePickerApiKey && config.googleCloudProjectNumber);
+      return response.type("html").send(page(`<p class="eyebrow">Google Drive</p><h1>Photo folders</h1>${list}${pickerReady ? '<button id="choose-folder" type="button">Choose a folder</button><p id="picker-message" class="muted"></p>' : '<p>Folder selection needs one final Google Cloud setting.</p>'}<p><a href="/app">Back to archive</a></p>${pickerReady ? pickerScript() : ""}`));
+    } catch (error) { next(error); }
   });
 
   app.get("/api/admin/members", requireAdministrator, async (_request, response, next) => {
@@ -190,7 +232,7 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
     try {
       const isAdmin = await data!.getApplicationRole(request.session.userId!) === "administrator";
       const driveConnected = await data!.hasDriveConnection(request.session.userId!);
-      return response.type("html").send(page(`<p class="eyebrow">Private family archive</p><h1>Your photographs</h1><p>You are signed in. Archives shared with you will appear here.</p><p>${driveConnected ? "Google Drive is connected." : '<a class="button" href="/drive/connect">Connect Google Drive</a>'}</p>${isAdmin ? '<p><a href="/admin/members">Manage application members</a></p>' : ""}<form method="post" action="/auth/logout"><button type="submit" class="secondary">Sign out</button></form>`));
+      return response.type("html").send(page(`<p class="eyebrow">Private family archive</p><h1>Your photographs</h1><p>You are signed in. Archives shared with you will appear here.</p><p>${driveConnected ? '<a class="button" href="/drive/folders">Choose photo folders</a>' : '<a class="button" href="/drive/connect">Connect Google Drive</a>'}</p>${isAdmin ? '<p><a href="/admin/members">Manage application members</a></p>' : ""}<form method="post" action="/auth/logout"><button type="submit" class="secondary">Sign out</button></form>`));
     } catch (error) { next(error); }
   });
 
@@ -213,4 +255,30 @@ function page(content: string) {
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]!);
+}
+
+function pickerScript() {
+  return `<script src="https://apis.google.com/js/api.js"></script><script>
+const button=document.getElementById("choose-folder"),message=document.getElementById("picker-message");
+button.addEventListener("click",async()=>{
+  button.disabled=true; message.textContent="Opening Google Drive…";
+  try {
+    const response=await fetch("/api/drive/picker");
+    if(!response.ok) throw new Error("Google Drive connection is unavailable.");
+    const config=await response.json();
+    gapi.load("picker",{callback:()=>{
+      const view=new google.picker.DocsView(google.picker.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMode(google.picker.DocsViewMode.LIST);
+      new google.picker.PickerBuilder().addView(view).setSelectableMimeTypes("application/vnd.google-apps.folder").setOAuthToken(config.accessToken).setDeveloperKey(config.developerKey).setAppId(config.appId).setOrigin(window.location.origin).setCallback(async data=>{
+        if(data.action===google.picker.Action.PICKED){
+          const folder=data.docs[0]; message.textContent="Attaching "+folder.name+"…";
+          const saved=await fetch("/api/drive/folders",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({folderId:folder.id})});
+          if(!saved.ok) return message.textContent="That folder could not be attached.";
+          window.location.reload();
+        } else if(data.action===google.picker.Action.CANCEL){ button.disabled=false; message.textContent=""; }
+      }).build().setVisible(true);
+      button.disabled=false;
+    }});
+  } catch(error){ button.disabled=false; message.textContent=error.message; }
+});
+</script>`;
 }

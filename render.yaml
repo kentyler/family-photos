@@ -28,6 +28,10 @@ services:
         sync: false
       - key: BOOTSTRAP_ADMIN_EMAIL
         sync: false
+      - key: GOOGLE_PICKER_API_KEY
+        sync: false
+      - key: GOOGLE_CLOUD_PROJECT_NUMBER
+        sync: false
 
 databases:
   - name: familyphotos

@@ -8,6 +8,8 @@ export type AppConfig = {
   googleClientSecret?: string;
   bootstrapAdminEmail?: string;
   tokenEncryptionKey?: string;
+  googlePickerApiKey?: string;
+  googleCloudProjectNumber?: string;
 };
 
 export function loadConfig(env = process.env): AppConfig {
@@ -42,5 +44,7 @@ export function loadConfig(env = process.env): AppConfig {
     googleClientSecret,
     bootstrapAdminEmail: env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase(),
     tokenEncryptionKey: env.TOKEN_ENCRYPTION_KEY,
+    googlePickerApiKey: env.GOOGLE_PICKER_API_KEY?.trim() || undefined,
+    googleCloudProjectNumber: env.GOOGLE_CLOUD_PROJECT_NUMBER?.trim() || undefined,
   };
 }

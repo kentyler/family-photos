@@ -82,15 +82,15 @@ Scope:
 
 - [~] Separate Google Drive authorization and consent.
 - [x] Request the least Drive access needed.
-- [ ] Select and attach one or more folders.
-- [ ] Store Drive IDs rather than filesystem paths.
+- [~] Select and attach one or more folders.
+- [x] Store Drive IDs rather than filesystem paths.
 - [ ] Index supported files and basic metadata.
 - [ ] Handle revoked access and moved, renamed, or deleted folders.
 - [ ] Provide reconnect and rescan controls.
 
 Exit criteria: a user can connect a folder and the application reliably discovers supported photos and subfolders.
 
-Current status: **in progress**. Step 2 began on 2026-08-17 with a separate authorization-code flow for Google Drive. It requests only the non-sensitive `drive.file` scope recommended for per-file access, stores refresh tokens encrypted at rest under a key separate from the session secret, and records connection status per application user. Google Picker folder selection, attached-folder records, indexing, reconnect, and rescan behavior are next.
+Current status: **in progress**. Step 2 began on 2026-08-17 with a separate authorization-code flow for Google Drive. It requests only the non-sensitive `drive.file` scope recommended for per-file access, stores refresh tokens encrypted at rest under a key separate from the session secret, and records connection status per application user. Migration `003` and the separate encryption secret are live on Render; production health and database-readiness checks pass. The application now includes Google Picker folder selection, server-side validation of selected folders through the Drive API, and migration `004` for durable Drive folder IDs. Fifteen automated tests and the production build pass. Picker configuration in Google Cloud and a live end-to-end folder selection remain before selection is complete; indexing, reconnect, and rescan behavior follow.
 
 ### Step 3 — Folder navigation and lightbox
 
@@ -182,6 +182,7 @@ These may be useful later, but they must build on the photo-person-family-tree l
 | 2026-08-17 | Bootstrap the first application administrator from a configured email only while the membership table is empty. | Solves initial setup without leaving a permanent configuration-based bypass after administrators can manage members themselves. |
 | 2026-08-17 | Use the non-sensitive `drive.file` scope with Google Picker instead of restricted `drive.readonly`. | Limits access to files explicitly shared with the application and avoids broad access to every file in a family member's Drive. |
 | 2026-08-17 | Encrypt Drive refresh tokens at rest with a deployment secret separate from the session secret. | Long-lived Drive access must remain revocable and must not be stored as plaintext or coupled to browser-session signing. |
+| 2026-08-17 | Use the Cloud project number as the Picker app ID and a browser-restricted Google API key for Picker. | Google requires the app ID with `drive.file`; restricting the public browser key to the production origin and Picker API limits misuse. |
 
 ## Working agreement for maintaining this file
 

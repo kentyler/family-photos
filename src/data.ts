@@ -24,6 +24,8 @@ export type ApplicationMembership = {
   joined: boolean;
 };
 
+export type AttachedFolder = { id: string; driveFolderId: string; name: string; attachedAt: string };
+
 export interface DataStore {
   isReady(): Promise<boolean>;
   admitGoogleUser(profile: IdentityProfile, bootstrapAdminEmail?: string): Promise<User | null>;
@@ -33,6 +35,9 @@ export interface DataStore {
   addApplicationMember(email: string, role: ApplicationRole, invitedBy: string): Promise<ApplicationMembership>;
   saveDriveConnection(userId: string, encryptedRefreshToken: string, scope: string): Promise<void>;
   hasDriveConnection(userId: string): Promise<boolean>;
+  getEncryptedDriveRefreshToken(userId: string): Promise<string | null>;
+  attachDriveFolder(userId: string, driveFolderId: string, name: string): Promise<AttachedFolder>;
+  listAttachedFolders(userId: string): Promise<AttachedFolder[]>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -137,6 +142,33 @@ export function createPostgresDataStore(pool: Pool): DataStore {
     async hasDriveConnection(userId) {
       const result = await pool.query("SELECT 1 FROM drive_connections WHERE user_id = $1", [userId]);
       return Boolean(result.rowCount);
+    },
+
+    async getEncryptedDriveRefreshToken(userId) {
+      const result = await pool.query<{ encrypted_refresh_token: string }>(
+        "SELECT encrypted_refresh_token FROM drive_connections WHERE user_id = $1",
+        [userId],
+      );
+      return result.rows[0]?.encrypted_refresh_token ?? null;
+    },
+
+    async attachDriveFolder(userId, driveFolderId, name) {
+      const result = await pool.query<{ id: string; drive_folder_id: string; name: string; attached_at: Date }>(`
+        INSERT INTO attached_drive_folders (user_id, drive_folder_id, name)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, drive_folder_id) DO UPDATE SET name = EXCLUDED.name
+        RETURNING id, drive_folder_id, name, attached_at
+      `, [userId, driveFolderId, name]);
+      const row = result.rows[0]!;
+      return { id: row.id, driveFolderId: row.drive_folder_id, name: row.name, attachedAt: row.attached_at.toISOString() };
+    },
+
+    async listAttachedFolders(userId) {
+      const result = await pool.query<{ id: string; drive_folder_id: string; name: string; attached_at: Date }>(`
+        SELECT id, drive_folder_id, name, attached_at
+        FROM attached_drive_folders WHERE user_id = $1 ORDER BY name, id
+      `, [userId]);
+      return result.rows.map((row) => ({ id: row.id, driveFolderId: row.drive_folder_id, name: row.name, attachedAt: row.attached_at.toISOString() }));
     },
 
     async listArchives(userId) {
