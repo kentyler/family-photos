@@ -2,15 +2,23 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AddressInfo } from "node:net";
 import { createApp } from "../src/app.js";
-import type { DataStore, IdentityProfile } from "../src/data.js";
+import type { ApplicationMembership, DataStore, IdentityProfile } from "../src/data.js";
 import type { IdentityClient } from "../src/oidc.js";
 
 const config = { nodeEnv: "test", port: 3000, appOrigin: "http://localhost:3000", sessionSecret: "test-secret-long-enough-for-session-signing" };
 
-function fakeData(): DataStore {
+function fakeData(applicationRole: "administrator" | "member" = "administrator"): DataStore {
+  const members: ApplicationMembership[] = [{ id: "membership-1", email: "ken@example.com", role: applicationRole, joined: true }];
   return {
-    async upsertGoogleUser(_profile: IdentityProfile) { return { id: "user-1", email: "ken@example.com", displayName: "Ken", avatarUrl: null }; },
+    async admitGoogleUser(_profile: IdentityProfile) { return { id: "user-1", email: "ken@example.com", displayName: "Ken", avatarUrl: null }; },
     async getUser(userId) { return userId === "user-1" ? { id: userId, email: "ken@example.com", displayName: "Ken", avatarUrl: null } : null; },
+    async getApplicationRole(userId) { return userId === "user-1" ? applicationRole : null; },
+    async listApplicationMembers() { return members; },
+    async addApplicationMember(email, role) {
+      const member = { id: `membership-${members.length + 1}`, email, role, joined: false };
+      members.push(member);
+      return member;
+    },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -69,6 +77,16 @@ test("Google login persists the user and establishes a fresh session", () => wit
   assert.deepEqual(await response.json(), { id: "user-1", email: "ken@example.com", displayName: "Ken", avatarUrl: null });
 }, { data: fakeData(), identity }));
 
+test("verified Google identities not on the membership list are denied", () => withServer(async (origin) => {
+  const start = await fetch(`${origin}/auth/google`, { redirect: "manual" });
+  const callback = await fetch(`${origin}/auth/google/callback?code=code-1&state=state-1`, {
+    redirect: "manual",
+    headers: { cookie: cookie(start) },
+  });
+  assert.equal(callback.status, 403);
+  assert.match(await callback.text(), /Membership required/);
+}, { data: (() => { const data = fakeData(); data.admitGoogleUser = async () => null; return data; })(), identity }));
+
 test("archive endpoints expose only the signed-in user's memberships", () => withServer(async (origin) => {
   const sessionCookie = await signIn(origin);
   const list = await fetch(`${origin}/api/archives`, { headers: { cookie: sessionCookie } });
@@ -85,3 +103,20 @@ test("logout destroys the server-side session", () => withServer(async (origin) 
   const current = await fetch(`${origin}/api/me`, { headers: { cookie: sessionCookie } });
   assert.equal(current.status, 401);
 }, { data: fakeData(), identity }));
+
+test("administrators can add an approved application member", () => withServer(async (origin) => {
+  const sessionCookie = await signIn(origin);
+  const added = await fetch(`${origin}/api/admin/members`, {
+    method: "POST",
+    headers: { cookie: sessionCookie, "content-type": "application/json" },
+    body: JSON.stringify({ email: "relative@example.com", role: "member" }),
+  });
+  assert.equal(added.status, 201);
+  assert.deepEqual(await added.json(), { id: "membership-2", email: "relative@example.com", role: "member", joined: false });
+}, { data: fakeData(), identity }));
+
+test("ordinary members cannot manage the application membership list", () => withServer(async (origin) => {
+  const sessionCookie = await signIn(origin);
+  const response = await fetch(`${origin}/api/admin/members`, { headers: { cookie: sessionCookie } });
+  assert.equal(response.status, 403);
+}, { data: fakeData("member"), identity }));

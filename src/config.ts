@@ -6,6 +6,7 @@ export type AppConfig = {
   appOrigin: string;
   googleClientId?: string;
   googleClientSecret?: string;
+  bootstrapAdminEmail?: string;
 };
 
 export function loadConfig(env = process.env): AppConfig {
@@ -33,5 +34,6 @@ export function loadConfig(env = process.env): AppConfig {
     appOrigin,
     googleClientId: env.GOOGLE_CLIENT_ID,
     googleClientSecret: env.GOOGLE_CLIENT_SECRET,
+    bootstrapAdminEmail: env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase(),
   };
 }
