@@ -139,7 +139,7 @@ Scope:
 - [ ] Match photo identities to canonical people.
 - [ ] Prevent or reconcile duplicate people.
 - [ ] Represent tentative matches and conflicting evidence.
-- [ ] Show relevant family context in the photo view.
+- [~] Show relevant family context in the photo view.
 
 Exit criteria: a person identified in a photo can be connected to one canonical family-tree identity, with uncertainty retained when appropriate.
 
@@ -149,12 +149,14 @@ Goal: make the photo archive and family tree feel like one connected product.
 
 Scope:
 
-- [ ] Photo person -> family-tree profile.
-- [ ] Family-tree person -> all associated photos.
+- [~] Photo person -> family-tree profile.
+- [~] Family-tree person -> all associated photos.
 - [ ] Filter a person's photos by date, folder, event, or companion.
 - [ ] Preserve context while moving between photos and the tree.
 
 Exit criteria: users can repeatedly move between photos and people without encountering disconnected screens or losing their place.
+
+Current status: **in progress**. A person-centered Family Explorer now searches canonical people by any alias. Its right pane shows the focused person's aliases, parents, marriages, and children, and relatives can be selected to change focus. Its left pane lists hosted thumbnails for both newly marked regions and reconciled legacy photo-person identifications. Photo links return to the existing photo workspace and automatically open the selected image; the browser back action preserves the focused person. Editing relationships and richer tree visualization remain future work.
 
 ## Deferred until the core loop is stable
 

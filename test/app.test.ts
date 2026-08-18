@@ -51,6 +51,8 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async addPersonAlias(_userId, personId, alias) { return { personId, aliasId: "alias-3", alias, isPrimary: false }; },
     async createPhotoSubjectRegion(_userId, _folderId, _fileId, subjectType, label, personId, aliasId, x, y, width, height) { return { id: "region-1", subjectType, personId, aliasId, label: label ?? "Grandma Claire", x, y, width, height, createdBy: "Ken", createdAt: "2026-08-18T00:00:00.000Z" }; },
     async deletePhotoSubjectRegion() { return true; },
+    async searchPeople(_userId, query) { return query ? [{ id: "person-1", primaryName: "Claire Atwood", aliases: ["Claire Atwood", "Grandma Claire"] }] : []; },
+    async getPersonExplorer(_userId, personId) { return personId === "person-1" ? { id: personId, primaryName: "Claire Atwood", aliases: ["Claire Atwood", "Grandma Claire"], parents: [], spouses: [], children: [], photos: [] } : null; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -307,5 +309,21 @@ test("members can create person aliases and mark people or things in a photo", (
     const marked = await fetch(`${origin}/api/drive/folders/folder-1/photos/photo-1/subjects`, { method: "POST", headers: { cookie: sessionCookie, "content-type": "application/json" }, body: JSON.stringify({ subjectType: "person", personId: "person-1", aliasId: "alias-1", x: 0.1, y: 0.2, width: 0.3, height: 0.4 }) });
     assert.equal(marked.status, 201);
     assert.deepEqual(await marked.json(), { id: "region-1", subjectType: "person", personId: "person-1", aliasId: "alias-1", label: "Grandma Claire", x: 0.1, y: 0.2, width: 0.3, height: 0.4, createdBy: "Ken", createdAt: "2026-08-18T00:00:00.000Z" });
+  }, { data, identity });
+});
+
+test("members can search people and open the genealogy explorer", () => {
+  const data = fakeData();
+  return withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    const search = await fetch(`${origin}/api/people/search?q=grandma`, { headers: { cookie: sessionCookie } });
+    assert.deepEqual(await search.json(), { people: [{ id: "person-1", primaryName: "Claire Atwood", aliases: ["Claire Atwood", "Grandma Claire"] }] });
+    const person = await fetch(`${origin}/api/people/person-1/explorer`, { headers: { cookie: sessionCookie } });
+    assert.equal(person.status, 200);
+    const page = await fetch(`${origin}/people?person=person-1`, { headers: { cookie: sessionCookie } });
+    const html = await page.text();
+    assert.match(html, /Family explorer/);
+    assert.match(html, /Marriages/);
+    assert.match(html, /people-photo-grid/);
   }, { data, identity });
 });

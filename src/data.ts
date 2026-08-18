@@ -42,6 +42,8 @@ export type DriveBrowserItem = { driveFileId: string; name: string; caption: str
 export type PhotoText = { caption: string; notes: string; updatedAt: string | null; updatedBy: string | null };
 export type PersonAliasChoice = { personId: string; aliasId: string; alias: string; isPrimary: boolean };
 export type PhotoSubjectRegion = { id: string; subjectType: "person" | "thing"; personId: string | null; aliasId: string | null; label: string; x: number; y: number; width: number; height: number; createdBy: string; createdAt: string };
+export type PersonSearchResult = { id: string; primaryName: string; aliases: string[] };
+export type PersonExplorer = { id: string; primaryName: string; aliases: string[]; parents: PersonSearchResult[]; spouses: PersonSearchResult[]; children: PersonSearchResult[]; photos: Array<{ folderId: string; driveFileId: string; parentDriveId: string; name: string; caption: string }> };
 
 export interface DataStore {
   isReady(): Promise<boolean>;
@@ -74,6 +76,8 @@ export interface DataStore {
   addPersonAlias(userId: string, personId: string, alias: string): Promise<PersonAliasChoice | null>;
   createPhotoSubjectRegion(userId: string, folderId: string, driveFileId: string, subjectType: "person" | "thing", label: string | null, personId: string | null, aliasId: string | null, x: number, y: number, width: number, height: number): Promise<PhotoSubjectRegion | null>;
   deletePhotoSubjectRegion(userId: string, folderId: string, driveFileId: string, regionId: string): Promise<boolean>;
+  searchPeople(userId: string, query: string, limit: number): Promise<PersonSearchResult[]>;
+  getPersonExplorer(userId: string, personId: string): Promise<PersonExplorer | null>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -520,6 +524,58 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       return Boolean(result.rowCount);
     },
 
+    async searchPeople(userId, query, limit) {
+      if (!await this.getApplicationRole(userId)) return [];
+      const result = await pool.query(`
+        SELECT p.id, COALESCE(max(a.alias) FILTER (WHERE a.is_primary), min(a.alias)) AS primary_name,
+               array_agg(a.alias ORDER BY a.is_primary DESC, lower(a.alias)) AS aliases
+        FROM family_people p JOIN family_person_aliases a ON a.person_id=p.id
+        WHERE lower(a.alias) LIKE '%' || lower($1) || '%'
+        GROUP BY p.id ORDER BY lower(COALESCE(max(a.alias) FILTER (WHERE a.is_primary), min(a.alias))) LIMIT $2
+      `, [query, limit]);
+      return result.rows.map(mapPersonSearchResult);
+    },
+
+    async getPersonExplorer(userId, personId) {
+      if (!await this.getApplicationRole(userId)) return null;
+      const people = await pool.query(`
+        SELECT p.id, p.legacy_person_id, COALESCE(max(a.alias) FILTER (WHERE a.is_primary), min(a.alias)) AS primary_name,
+               array_agg(a.alias ORDER BY a.is_primary DESC, lower(a.alias)) AS aliases
+        FROM family_people p JOIN family_person_aliases a ON a.person_id=p.id
+        WHERE p.id=$1 GROUP BY p.id
+      `, [personId]);
+      const person = people.rows[0];
+      if (!person) return null;
+      const relationships = person.legacy_person_id ? await pool.query(`
+        SELECT r.type, related.id, COALESCE(max(a.alias) FILTER (WHERE a.is_primary), min(a.alias)) AS primary_name,
+               array_agg(a.alias ORDER BY a.is_primary DESC, lower(a.alias)) AS aliases
+        FROM legacy_catalog.relationships r
+        JOIN family_people related ON related.legacy_person_id=r.related_id
+        JOIN family_person_aliases a ON a.person_id=related.id
+        WHERE r.person_id=$1 AND r.type IN ('parent','father','mother','spouse','child')
+        GROUP BY r.type, related.id ORDER BY r.type, lower(COALESCE(max(a.alias) FILTER (WHERE a.is_primary), min(a.alias)))
+      `, [person.legacy_person_id]) : { rows: [] };
+      const photos = await pool.query(`
+        WITH identified AS (
+          SELECT r.attached_folder_id, r.drive_file_id FROM photo_subject_regions r WHERE r.person_id=$1
+          UNION
+          SELECT i.attached_folder_id, i.drive_file_id
+          FROM family_people p
+          JOIN legacy_catalog.photo_people pp ON pp.person_id=p.legacy_person_id
+          JOIN legacy_drive_matches m ON m.legacy_file_id=pp.photo_id
+          JOIN indexed_drive_items i ON i.id=m.indexed_item_id
+          WHERE p.id=$1
+        )
+        SELECT i.attached_folder_id AS folder_id, i.drive_file_id, i.parent_drive_id, i.name, COALESCE(pr.caption,i.name) AS caption
+        FROM identified x JOIN indexed_drive_items i ON i.attached_folder_id=x.attached_folder_id AND i.drive_file_id=x.drive_file_id
+        JOIN attached_drive_folders f ON f.id=i.attached_folder_id
+        LEFT JOIN photo_records pr ON pr.attached_folder_id=i.attached_folder_id AND pr.drive_file_id=i.drive_file_id
+        WHERE f.user_id=$2 ORDER BY lower(COALESCE(pr.caption,i.name)), i.drive_file_id
+      `, [personId, userId]);
+      const related = relationships.rows.map(mapPersonSearchResult);
+      return { id: person.id, primaryName: person.primary_name, aliases: person.aliases, parents: related.filter((row: any) => row.type === "child"), spouses: related.filter((row: any) => row.type === "spouse"), children: related.filter((row: any) => row.type === "parent" || row.type === "father" || row.type === "mother"), photos: photos.rows.map((row) => ({ folderId: row.folder_id, driveFileId: row.drive_file_id, parentDriveId: row.parent_drive_id, name: row.name, caption: row.caption })) };
+    },
+
     async listArchives(userId) {
       const result = await pool.query<{ id: string; name: string; role: ArchiveMembership["role"] }>(`
         SELECT a.id, a.name, m.role
@@ -553,4 +609,8 @@ function mapReviewItem(row: { name: string; relative_path: string; mime_type: st
 
 function mapPhotoSubjectRegion(row: any): PhotoSubjectRegion {
   return { id: row.id, subjectType: row.subject_type, personId: row.person_id ?? null, aliasId: row.alias_id ?? null, label: row.display_label, x: Number(row.x), y: Number(row.y), width: Number(row.width), height: Number(row.height), createdBy: row.created_by_name, createdAt: new Date(row.created_at).toISOString() };
+}
+
+function mapPersonSearchResult(row: any): PersonSearchResult & { type?: string } {
+  return { id: row.id, primaryName: row.primary_name, aliases: row.aliases, ...(row.type ? { type: row.type } : {}) };
 }
