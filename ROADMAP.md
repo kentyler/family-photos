@@ -119,14 +119,14 @@ Scope:
 - [~] Stable photo identity across Drive rename or move operations.
 - [~] Individual photo page.
 - [~] Caption, notes/stories, and comments as distinct concepts.
-- [ ] Person identification.
+- [~] Person identification.
 - [ ] Contributor attribution and edit history.
 - [ ] Dates and descriptive metadata.
 - [ ] Support uncertain or disputed information.
 
 Exit criteria: relatives can enrich the same photograph without overwriting one another or losing provenance.
 
-Current status: **in progress**. The lightbox is now a responsive two-pane photo workspace with the image and its single caption beside editable caption and shared story/notes fields. Every indexed image receives its filename as a persisted default caption; editing it updates that same caption record. Thumbnail cards show this caption instead of the underlying filename and reconciliation label, reveal the full caption on hover, and update immediately after an edit. Text is stored against the attached folder and stable Google Drive file ID, survives indexing rescans and Drive renames, records the latest contributor, and is membership-scoped. Comments and full edit history remain separate future concepts. A third pane is planned for rectangular regions identifying either people or things; person regions can later connect to canonical genealogy records.
+Current status: **in progress**. The lightbox is now a responsive two-pane photo workspace with the image and its single caption beside editable caption and shared story/notes fields. Every indexed image receives its filename as a persisted default caption; editing it updates that same caption record. Thumbnail cards show this caption instead of the underlying filename and reconciliation label, reveal the full caption on hover, and update immediately after an edit. Members can draw normalized rectangular regions around people or things, label things, link people through an alias to one canonical person, remove incorrect regions, and hide all marks for an unobstructed view. Legacy people and aliases seed the new canonical tables. Text and regions are stored against the attached folder and stable Google Drive file ID and survive indexing rescans and Drive renames. Comments, full edit history, richer person management, and genealogy navigation remain future work.
 
 ### Step 5 — Family-tree integration
 

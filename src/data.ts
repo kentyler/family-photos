@@ -40,6 +40,8 @@ export type DriveScanJob = { id: string; status: "pending" | "running" | "comple
 export type ReconciliationReviewItem = { name: string; relativePath: string; mimeType: string; sizeBytes: number | null; matchMethod: string | null; legacyPaths: string[] };
 export type DriveBrowserItem = { driveFileId: string; name: string; caption: string | null; mimeType: string; modifiedTime: string | null; sizeBytes: number | null; matched: boolean };
 export type PhotoText = { caption: string; notes: string; updatedAt: string | null; updatedBy: string | null };
+export type PersonAliasChoice = { personId: string; aliasId: string; alias: string; isPrimary: boolean };
+export type PhotoSubjectRegion = { id: string; subjectType: "person" | "thing"; personId: string | null; aliasId: string | null; label: string; x: number; y: number; width: number; height: number; createdBy: string; createdAt: string };
 
 export interface DataStore {
   isReady(): Promise<boolean>;
@@ -66,6 +68,12 @@ export interface DataStore {
   canAccessIndexedDriveFile(userId: string, folderId: string, driveFileId: string): Promise<boolean>;
   getPhotoText(userId: string, folderId: string, driveFileId: string): Promise<PhotoText | null>;
   savePhotoText(userId: string, folderId: string, driveFileId: string, caption: string, notes: string): Promise<PhotoText | null>;
+  listPhotoSubjectRegions(userId: string, folderId: string, driveFileId: string): Promise<PhotoSubjectRegion[] | null>;
+  listPersonAliasChoices(userId: string): Promise<PersonAliasChoice[]>;
+  createPersonWithAlias(userId: string, alias: string): Promise<PersonAliasChoice>;
+  addPersonAlias(userId: string, personId: string, alias: string): Promise<PersonAliasChoice | null>;
+  createPhotoSubjectRegion(userId: string, folderId: string, driveFileId: string, subjectType: "person" | "thing", label: string | null, personId: string | null, aliasId: string | null, x: number, y: number, width: number, height: number): Promise<PhotoSubjectRegion | null>;
+  deletePhotoSubjectRegion(userId: string, folderId: string, driveFileId: string, regionId: string): Promise<boolean>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -442,6 +450,76 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       return { caption: row.caption, notes: row.notes, updatedAt: row.updated_at.toISOString(), updatedBy: user.rows[0]?.display_name ?? null };
     },
 
+    async listPhotoSubjectRegions(userId, folderId, driveFileId) {
+      const access = await pool.query("SELECT 1 FROM indexed_drive_items i JOIN attached_drive_folders f ON f.id=i.attached_folder_id WHERE f.user_id=$1 AND f.id=$2 AND i.drive_file_id=$3 AND i.mime_type LIKE 'image/%'", [userId, folderId, driveFileId]);
+      if (!access.rowCount) return null;
+      const result = await pool.query(`
+        SELECT r.id, r.subject_type, r.person_id, r.alias_id, COALESCE(a.alias, r.label) AS display_label, r.x, r.y, r.width, r.height,
+               u.display_name AS created_by_name, r.created_at
+        FROM photo_subject_regions r JOIN users u ON u.id=r.created_by
+        LEFT JOIN family_person_aliases a ON a.id=r.alias_id
+        WHERE r.attached_folder_id=$1 AND r.drive_file_id=$2
+        ORDER BY r.created_at, r.id
+      `, [folderId, driveFileId]);
+      return result.rows.map(mapPhotoSubjectRegion);
+    },
+
+    async listPersonAliasChoices(userId) {
+      if (!await this.getApplicationRole(userId)) return [];
+      const result = await pool.query(`SELECT person_id, id AS alias_id, alias, is_primary FROM family_person_aliases ORDER BY lower(alias), id`);
+      return result.rows.map((row) => ({ personId: row.person_id, aliasId: row.alias_id, alias: row.alias, isPrimary: row.is_primary }));
+    },
+
+    async createPersonWithAlias(userId, alias) {
+      if (!await this.getApplicationRole(userId)) throw new Error("Membership required");
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const person = await client.query<{ id: string }>("INSERT INTO family_people DEFAULT VALUES RETURNING id");
+        const created = await client.query("INSERT INTO family_person_aliases (person_id, alias, is_primary) VALUES ($1,$2,true) RETURNING id, person_id, alias, is_primary", [person.rows[0]!.id, alias]);
+        await client.query("COMMIT");
+        const row = created.rows[0];
+        return { personId: row.person_id, aliasId: row.id, alias: row.alias, isPrimary: row.is_primary };
+      } catch (error) { await client.query("ROLLBACK"); throw error; }
+      finally { client.release(); }
+    },
+
+    async addPersonAlias(userId, personId, alias) {
+      if (!await this.getApplicationRole(userId)) return null;
+      const result = await pool.query(`
+        INSERT INTO family_person_aliases (person_id, alias)
+        SELECT id, $2 FROM family_people WHERE id=$1
+        ON CONFLICT (person_id, alias) DO UPDATE SET alias=EXCLUDED.alias
+        RETURNING id, person_id, alias, is_primary
+      `, [personId, alias]);
+      const row = result.rows[0];
+      return row ? { personId: row.person_id, aliasId: row.id, alias: row.alias, isPrimary: row.is_primary } : null;
+    },
+
+    async createPhotoSubjectRegion(userId, folderId, driveFileId, subjectType, label, personId, aliasId, x, y, width, height) {
+      const access = await pool.query("SELECT 1 FROM indexed_drive_items i JOIN attached_drive_folders f ON f.id=i.attached_folder_id WHERE f.user_id=$1 AND f.id=$2 AND i.drive_file_id=$3 AND i.mime_type LIKE 'image/%'", [userId, folderId, driveFileId]);
+      if (!access.rowCount) return null;
+      const result = await pool.query(`
+        INSERT INTO photo_subject_regions
+          (attached_folder_id, drive_file_id, subject_type, label, person_id, alias_id, x, y, width, height, created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        RETURNING id, subject_type, person_id, alias_id, x, y, width, height, created_at
+      `, [folderId, driveFileId, subjectType, label, personId, aliasId, x, y, width, height, userId]);
+      const user = await pool.query<{ display_name: string }>("SELECT display_name FROM users WHERE id=$1", [userId]);
+      const alias = aliasId ? await pool.query<{ alias: string }>("SELECT alias FROM family_person_aliases WHERE id=$1 AND person_id=$2", [aliasId, personId]) : null;
+      return mapPhotoSubjectRegion({ ...result.rows[0], display_label: label ?? alias?.rows[0]?.alias, created_by_name: user.rows[0]?.display_name ?? "Family member" });
+    },
+
+    async deletePhotoSubjectRegion(userId, folderId, driveFileId, regionId) {
+      const result = await pool.query(`
+        DELETE FROM photo_subject_regions r
+        USING attached_drive_folders f
+        WHERE r.id=$1 AND r.attached_folder_id=$2 AND r.drive_file_id=$3
+          AND f.id=r.attached_folder_id AND f.user_id=$4
+      `, [regionId, folderId, driveFileId, userId]);
+      return Boolean(result.rowCount);
+    },
+
     async listArchives(userId) {
       const result = await pool.query<{ id: string; name: string; role: ArchiveMembership["role"] }>(`
         SELECT a.id, a.name, m.role
@@ -471,4 +549,8 @@ function mapScanJob(row: any): DriveScanJob {
 
 function mapReviewItem(row: { name: string; relative_path: string; mime_type: string; size_bytes: string | null; match_method: string | null; legacy_paths: string[] }): ReconciliationReviewItem {
   return { name: row.name, relativePath: row.relative_path, mimeType: row.mime_type, sizeBytes: row.size_bytes === null ? null : Number(row.size_bytes), matchMethod: row.match_method, legacyPaths: row.legacy_paths };
+}
+
+function mapPhotoSubjectRegion(row: any): PhotoSubjectRegion {
+  return { id: row.id, subjectType: row.subject_type, personId: row.person_id ?? null, aliasId: row.alias_id ?? null, label: row.display_label, x: Number(row.x), y: Number(row.y), width: Number(row.width), height: Number(row.height), createdBy: row.created_by_name, createdAt: new Date(row.created_at).toISOString() };
 }

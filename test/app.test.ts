@@ -45,6 +45,12 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async canAccessIndexedDriveFile() { return true; },
     async getPhotoText() { return { caption: "", notes: "", updatedAt: null, updatedBy: null }; },
     async savePhotoText(_userId, _folderId, _fileId, caption, notes) { return { caption, notes, updatedAt: "2026-08-18T00:00:00.000Z", updatedBy: "Ken" }; },
+    async listPhotoSubjectRegions() { return []; },
+    async listPersonAliasChoices() { return [{ personId: "person-1", aliasId: "alias-1", alias: "Grandma Claire", isPrimary: false }]; },
+    async createPersonWithAlias(_userId, alias) { return { personId: "person-2", aliasId: "alias-2", alias, isPrimary: true }; },
+    async addPersonAlias(_userId, personId, alias) { return { personId, aliasId: "alias-3", alias, isPrimary: false }; },
+    async createPhotoSubjectRegion(_userId, _folderId, _fileId, subjectType, label, personId, aliasId, x, y, width, height) { return { id: "region-1", subjectType, personId, aliasId, label: label ?? "Grandma Claire", x, y, width, height, createdBy: "Ken", createdAt: "2026-08-18T00:00:00.000Z" }; },
+    async deletePhotoSubjectRegion() { return true; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -254,6 +260,10 @@ test("members can browse indexed folders and open image cards", () => {
     assert.match(html, /Story or notes/);
     assert.match(html, /data-id="photo-1"/);
     assert.match(html, /viewer-caption/);
+    assert.match(html, /Mark a subject/);
+    assert.match(html, /subject-canvas/);
+    assert.match(html, /Hide marks/);
+    for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new Function(script[1]));
   }, { data, identity });
 });
 
@@ -276,5 +286,22 @@ test("members can load and save caption and story text for an indexed photo", ()
     });
     assert.equal(saved.status, 200);
     assert.deepEqual(await saved.json(), { caption: "Summer picnic", notes: "Grandma remembered the red blanket.", updatedAt: "2026-08-18T00:00:00.000Z", updatedBy: "Ken" });
+  }, { data, identity });
+});
+
+test("members can create person aliases and mark people or things in a photo", () => {
+  const data = fakeData();
+  return withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    const aliases = await fetch(`${origin}/api/people/aliases`, { headers: { cookie: sessionCookie } });
+    assert.deepEqual(await aliases.json(), { aliases: [{ personId: "person-1", aliasId: "alias-1", alias: "Grandma Claire", isPrimary: false }] });
+    const person = await fetch(`${origin}/api/people`, { method: "POST", headers: { cookie: sessionCookie, "content-type": "application/json" }, body: JSON.stringify({ alias: "Aunt Jo" }) });
+    assert.equal(person.status, 201);
+    const addedAlias = await fetch(`${origin}/api/people/person-1/aliases`, { method: "POST", headers: { cookie: sessionCookie, "content-type": "application/json" }, body: JSON.stringify({ alias: "Claire" }) });
+    assert.equal(addedAlias.status, 201);
+    assert.deepEqual(await addedAlias.json(), { personId: "person-1", aliasId: "alias-3", alias: "Claire", isPrimary: false });
+    const marked = await fetch(`${origin}/api/drive/folders/folder-1/photos/photo-1/subjects`, { method: "POST", headers: { cookie: sessionCookie, "content-type": "application/json" }, body: JSON.stringify({ subjectType: "person", personId: "person-1", aliasId: "alias-1", x: 0.1, y: 0.2, width: 0.3, height: 0.4 }) });
+    assert.equal(marked.status, 201);
+    assert.deepEqual(await marked.json(), { id: "region-1", subjectType: "person", personId: "person-1", aliasId: "alias-1", label: "Grandma Claire", x: 0.1, y: 0.2, width: 0.3, height: 0.4, createdBy: "Ken", createdAt: "2026-08-18T00:00:00.000Z" });
   }, { data, identity });
 });
