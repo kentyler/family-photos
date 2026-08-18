@@ -35,6 +35,7 @@ export type IndexedDriveItem = {
   modifiedTime: string | null;
   sizeBytes: number | null;
 };
+export type IndexedDriveFolder = { driveFolderId: string; parentDriveId: string; name: string; relativePath: string; modifiedTime: string | null };
 export type DriveScanJob = { id: string; status: "pending" | "running" | "completed" | "failed"; foldersScanned: number; itemsDiscovered: number; matchedItems: number | null; unmatchedItems: number | null; ambiguousItems: number | null; errorMessage: string | null };
 export type ReconciliationReviewItem = { name: string; relativePath: string; mimeType: string; sizeBytes: number | null; matchMethod: string | null; legacyPaths: string[] };
 export type DriveBrowserItem = { driveFileId: string; name: string; mimeType: string; modifiedTime: string | null; sizeBytes: number | null; matched: boolean };
@@ -52,7 +53,7 @@ export interface DataStore {
   attachDriveFolder(userId: string, driveFolderId: string, name: string): Promise<AttachedFolder>;
   listAttachedFolders(userId: string): Promise<AttachedFolder[]>;
   getAttachedFolder(userId: string, folderId: string): Promise<AttachedFolder | null>;
-  replaceIndexedDriveItems(userId: string, folderId: string, items: IndexedDriveItem[]): Promise<number>;
+  replaceIndexedDriveItems(userId: string, folderId: string, items: IndexedDriveItem[], folders?: IndexedDriveFolder[]): Promise<number>;
   countIndexedDriveItems(userId: string, folderId: string): Promise<number>;
   countLegacyDriveMatches(userId: string, folderId: string): Promise<number>;
   reconcileLegacyDriveItems(userId: string, folderId: string): Promise<{ matched: number; exactPath: number; uniqueNameSize: number; unmatched: number; ambiguous: number }>;
@@ -204,13 +205,21 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       return row ? { id: row.id, driveFolderId: row.drive_folder_id, name: row.name, attachedAt: row.attached_at.toISOString() } : null;
     },
 
-    async replaceIndexedDriveItems(userId, folderId, items) {
+    async replaceIndexedDriveItems(userId, folderId, items, folders = []) {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
         const folder = await client.query("SELECT 1 FROM attached_drive_folders WHERE id = $1 AND user_id = $2 FOR UPDATE", [folderId, userId]);
         if (!folder.rowCount) throw new Error("Attached folder not found");
+        await client.query("DELETE FROM indexed_drive_folders WHERE attached_folder_id = $1", [folderId]);
         await client.query("DELETE FROM indexed_drive_items WHERE attached_folder_id = $1", [folderId]);
+        for (const indexedFolder of folders) {
+          await client.query(`
+            INSERT INTO indexed_drive_folders
+              (attached_folder_id, drive_folder_id, parent_drive_id, name, relative_path, modified_time)
+            VALUES ($1, $2, $3, $4, $5, $6)
+          `, [folderId, indexedFolder.driveFolderId, indexedFolder.parentDriveId, indexedFolder.name, indexedFolder.relativePath, indexedFolder.modifiedTime]);
+        }
         for (const item of items) {
           await client.query(`
             INSERT INTO indexed_drive_items
@@ -363,17 +372,23 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       let parentName = folder.rows[0].name;
       let parentParentId: string | null = null;
       if (parentDriveId !== folder.rows[0].drive_folder_id) {
-        const parent = await pool.query<{ name: string; parent_drive_id: string }>("SELECT name, parent_drive_id FROM indexed_drive_items WHERE attached_folder_id=$1 AND drive_file_id=$2 AND mime_type='application/vnd.google-apps.folder'", [folderId, parentDriveId]);
+        const parent = await pool.query<{ name: string; parent_drive_id: string }>("SELECT name, parent_drive_id FROM indexed_drive_folders WHERE attached_folder_id=$1 AND drive_folder_id=$2", [folderId, parentDriveId]);
         if (!parent.rows[0]) return null;
         parentName = parent.rows[0].name;
         parentParentId = parent.rows[0].parent_drive_id;
       }
       const result = await pool.query<{ total_count: string; drive_file_id: string; name: string; mime_type: string; modified_time: Date | null; size_bytes: string | null; matched: boolean }>(`
-        SELECT count(*) OVER () AS total_count, i.drive_file_id, i.name, i.mime_type, i.modified_time, i.size_bytes,
-               (m.indexed_item_id IS NOT NULL) AS matched
-        FROM indexed_drive_items i LEFT JOIN legacy_drive_matches m ON m.indexed_item_id=i.id
-        WHERE i.attached_folder_id=$1 AND i.parent_drive_id=$2
-        ORDER BY (i.mime_type='application/vnd.google-apps.folder') DESC, lower(i.name), i.drive_file_id
+        WITH children AS (
+          SELECT drive_folder_id AS drive_file_id, name, 'application/vnd.google-apps.folder'::text AS mime_type,
+                 modified_time, NULL::bigint AS size_bytes, false AS matched
+          FROM indexed_drive_folders WHERE attached_folder_id=$1 AND parent_drive_id=$2
+          UNION ALL
+          SELECT i.drive_file_id, i.name, i.mime_type, i.modified_time, i.size_bytes, (m.indexed_item_id IS NOT NULL) AS matched
+          FROM indexed_drive_items i LEFT JOIN legacy_drive_matches m ON m.indexed_item_id=i.id
+          WHERE i.attached_folder_id=$1 AND i.parent_drive_id=$2
+        )
+        SELECT count(*) OVER () AS total_count, * FROM children
+        ORDER BY (mime_type='application/vnd.google-apps.folder') DESC, lower(name), drive_file_id
         OFFSET $3 LIMIT $4
       `, [folderId, parentDriveId, offset, limit]);
       return { parentName, parentDriveId: parentParentId, total: Number(result.rows[0]?.total_count ?? 0), items: result.rows.map((row) => ({ driveFileId: row.drive_file_id, name: row.name, mimeType: row.mime_type, modifiedTime: row.modified_time?.toISOString() ?? null, sizeBytes: row.size_bytes === null ? null : Number(row.size_bytes), matched: row.matched })) };

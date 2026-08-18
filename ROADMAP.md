@@ -108,7 +108,7 @@ Scope:
 
 Exit criteria: a user can comfortably browse a large Drive collection without editing anything.
 
-Current status: **in progress**. The first production viewer slice uses the indexed Drive hierarchy for folder navigation, pages large folders in groups of 60, proxies private Drive thumbnails and originals only after membership and attached-folder checks, and opens images in an in-page viewer with mouse, keyboard, previous, and next navigation. Reconciliation status remains visible on photo cards but is no longer the primary workflow. Incremental loading, sorting, richer media handling, and navigation-context polish remain.
+Current status: **in progress**. The first production viewer slice stores folders as first-class indexed records with their real Google Drive IDs and parent IDs, pages large folders in groups of 60, proxies private Drive thumbnails and originals only after membership and attached-folder checks, and opens images in an in-page viewer with mouse, keyboard, previous, and next navigation. Reconciliation status remains visible on photo cards but is no longer the primary workflow. Incremental loading, sorting, richer media handling, and navigation-context polish remain.
 
 ### Step 4 — Individual photo record
 
@@ -190,6 +190,7 @@ These may be useful later, but they must build on the photo-person-family-tree l
 | 2026-08-17 | Import every legacy PostgreSQL catalog table intact before normalization or metadata re-entry. | A complete isolated copy preserves file records, thumbnails, face data, genealogy, relationships, settings, and even currently unused tables; later transformations remain reproducible and auditable. |
 | 2026-08-17 | Reconcile Drive files by exact relative path and size, falling back only to a unique filename-and-size candidate. | Legacy SHA-256 hashes cannot be compared directly with Drive's MD5 metadata; conservative deterministic matching avoids silently attaching family knowledge to the wrong photograph. |
 | 2026-08-17 | Run Drive scans as persistent background jobs and validate matches through random sampling plus review of every ambiguous result. | Large folders outlive normal web requests; background progress prevents apparent hangs, while risk-based sampling provides practical assurance without manually checking hundreds of thousands of photos. |
+| 2026-08-17 | Store indexed Drive folders as first-class records rather than reconstructing navigation from photo paths. | Stable Drive IDs and explicit parent relationships handle duplicate names and future moves or renames without relying on a fragile path-derived hierarchy. |
 
 ## Working agreement for maintaining this file
 

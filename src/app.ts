@@ -4,7 +4,7 @@ import connectPgSimple from "connect-pg-simple";
 import pg from "pg";
 import { Readable } from "node:stream";
 import type { AppConfig } from "./config.js";
-import { createPostgresDataStore, type DataStore, type DriveScanJob } from "./data.js";
+import { createPostgresDataStore, type DataStore, type DriveScanJob, type IndexedDriveFolder } from "./data.js";
 import { createGoogleIdentityClient, type IdentityClient } from "./oidc.js";
 import { createDriveAuthorizationClient, type DriveAuthorizationClient } from "./drive-oauth.js";
 import { decryptToken, encryptToken } from "./token-crypto.js";
@@ -202,17 +202,22 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
         const pending = [{ driveId: folder.driveFolderId, relativePath: "" }];
         const visited = new Set<string>();
         const indexed = [];
+        const indexedFolders: IndexedDriveFolder[] = [];
         while (pending.length) {
           const { driveId: parentDriveId, relativePath: parentPath } = pending.shift()!;
           if (visited.has(parentDriveId)) continue;
           visited.add(parentDriveId);
           for (const item of await driveAuthorization.listChildren(accessToken, parentDriveId)) {
-            if (item.mimeType === "application/vnd.google-apps.folder") pending.push({ driveId: item.id, relativePath: parentPath ? `${parentPath}/${item.name}` : item.name });
+            if (item.mimeType === "application/vnd.google-apps.folder") {
+              const relativePath = parentPath ? `${parentPath}/${item.name}` : item.name;
+              indexedFolders.push({ driveFolderId: item.id, parentDriveId, name: item.name, relativePath, modifiedTime: item.modifiedTime });
+              pending.push({ driveId: item.id, relativePath });
+            }
             else if (item.mimeType.startsWith("image/") || item.mimeType.startsWith("video/")) indexed.push({ driveFileId: item.id, parentDriveId, name: item.name, mimeType: item.mimeType, relativePath: parentPath ? `${parentPath}/${item.name}` : item.name, md5Checksum: item.md5Checksum, modifiedTime: item.modifiedTime, sizeBytes: item.sizeBytes });
           }
           if (visited.size % 25 === 0) await data!.updateDriveScanJob(jobId, { foldersScanned: visited.size, itemsDiscovered: indexed.length });
         }
-        await data!.replaceIndexedDriveItems(userId, folder.id, indexed);
+        await data!.replaceIndexedDriveItems(userId, folder.id, indexed, indexedFolders);
         const result = await data!.reconcileLegacyDriveItems(userId, folder.id);
         await data!.updateDriveScanJob(jobId, { status: "completed", foldersScanned: visited.size, itemsDiscovered: indexed.length, matchedItems: result.matched, unmatchedItems: result.unmatched, ambiguousItems: result.ambiguous });
       } catch (error) {
@@ -281,6 +286,7 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
       const pageSize = 60;
       const browserPage = await data!.getDriveBrowserPage(request.session.userId!, folderId, parent, (pageNumber - 1) * pageSize, pageSize);
       if (!browserPage) return response.status(404).json({ error: "folder_not_found" });
+      const needsFolderIndex = parent === folder.driveFolderId && browserPage.total === 0 && await data!.countIndexedDriveItems(request.session.userId!, folderId) > 0;
       const cards = browserPage.items.map((item) => item.mimeType === "application/vnd.google-apps.folder"
         ? `<a class="photo-card folder-card" href="?parent=${encodeURIComponent(item.driveFileId)}"><span class="folder-icon">📁</span><strong>${escapeHtml(item.name)}</strong></a>`
         : item.mimeType.startsWith("image/")
@@ -289,7 +295,7 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
       const back = browserPage.parentDriveId ? `<a href="?parent=${encodeURIComponent(browserPage.parentDriveId)}">← Parent folder</a>` : `<a href="/drive/folders">← Photo folders</a>`;
       const previous = pageNumber > 1 ? `<a href="?parent=${encodeURIComponent(parent)}&page=${pageNumber - 1}">Previous</a>` : "";
       const following = pageNumber * pageSize < browserPage.total ? `<a href="?parent=${encodeURIComponent(parent)}&page=${pageNumber + 1}">Next</a>` : "";
-      return response.type("html").send(page(`<div class="browser-head"><div><p class="eyebrow">Photo browser</p><h1>${escapeHtml(browserPage.parentName)}</h1></div><p>${back}</p></div><p>${browserPage.total} items</p><div class="photo-grid">${cards || "<p>This folder is empty.</p>"}</div><p class="pager">${previous} ${following}</p><dialog id="photo-viewer"><button class="viewer-close" aria-label="Close">×</button><img alt=""><p></p><button class="viewer-prev" aria-label="Previous photo">←</button><button class="viewer-next" aria-label="Next photo">→</button></dialog>${viewerScript()}`));
+      return response.type("html").send(page(`<div class="browser-head"><div><p class="eyebrow">Photo browser</p><h1>${escapeHtml(browserPage.parentName)}</h1></div><p>${back}</p></div>${needsFolderIndex ? '<p>This collection was scanned before folder navigation was added. Return to Photo folders and run <strong>Rescan and reconcile</strong> once.</p>' : `<p>${browserPage.total} items</p><div class="photo-grid">${cards || "<p>This folder is empty.</p>"}</div><p class="pager">${previous} ${following}</p>`}<dialog id="photo-viewer"><button class="viewer-close" aria-label="Close">×</button><img alt=""><p></p><button class="viewer-prev" aria-label="Previous photo">←</button><button class="viewer-next" aria-label="Next photo">→</button></dialog>${viewerScript()}`));
     } catch (error) { next(error); }
   });
 
