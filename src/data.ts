@@ -38,7 +38,7 @@ export type IndexedDriveItem = {
 export type IndexedDriveFolder = { driveFolderId: string; parentDriveId: string; name: string; relativePath: string; modifiedTime: string | null };
 export type DriveScanJob = { id: string; status: "pending" | "running" | "completed" | "failed"; foldersScanned: number; itemsDiscovered: number; matchedItems: number | null; unmatchedItems: number | null; ambiguousItems: number | null; errorMessage: string | null };
 export type ReconciliationReviewItem = { name: string; relativePath: string; mimeType: string; sizeBytes: number | null; matchMethod: string | null; legacyPaths: string[] };
-export type DriveBrowserItem = { driveFileId: string; name: string; mimeType: string; modifiedTime: string | null; sizeBytes: number | null; matched: boolean };
+export type DriveBrowserItem = { driveFileId: string; name: string; caption: string | null; mimeType: string; modifiedTime: string | null; sizeBytes: number | null; matched: boolean };
 export type PhotoText = { caption: string; notes: string; updatedAt: string | null; updatedBy: string | null };
 
 export interface DataStore {
@@ -387,21 +387,24 @@ export function createPostgresDataStore(pool: Pool): DataStore {
         parentName = parent.rows[0].name;
         parentParentId = parent.rows[0].parent_drive_id;
       }
-      const result = await pool.query<{ total_count: string; drive_file_id: string; name: string; mime_type: string; modified_time: Date | null; size_bytes: string | null; matched: boolean }>(`
+      const result = await pool.query<{ total_count: string; drive_file_id: string; name: string; caption: string | null; mime_type: string; modified_time: Date | null; size_bytes: string | null; matched: boolean }>(`
         WITH children AS (
           SELECT drive_folder_id AS drive_file_id, name, 'application/vnd.google-apps.folder'::text AS mime_type,
-                 modified_time, NULL::bigint AS size_bytes, false AS matched
+                 modified_time, NULL::bigint AS size_bytes, false AS matched, NULL::text AS caption
           FROM indexed_drive_folders WHERE attached_folder_id=$1 AND parent_drive_id=$2
           UNION ALL
-          SELECT i.drive_file_id, i.name, i.mime_type, i.modified_time, i.size_bytes, (m.indexed_item_id IS NOT NULL) AS matched
-          FROM indexed_drive_items i LEFT JOIN legacy_drive_matches m ON m.indexed_item_id=i.id
+          SELECT i.drive_file_id, i.name, i.mime_type, i.modified_time, i.size_bytes,
+                 (m.indexed_item_id IS NOT NULL) AS matched, COALESCE(p.caption, i.name) AS caption
+          FROM indexed_drive_items i
+          LEFT JOIN legacy_drive_matches m ON m.indexed_item_id=i.id
+          LEFT JOIN photo_records p ON p.attached_folder_id=i.attached_folder_id AND p.drive_file_id=i.drive_file_id
           WHERE i.attached_folder_id=$1 AND i.parent_drive_id=$2
         )
         SELECT count(*) OVER () AS total_count, * FROM children
         ORDER BY (mime_type='application/vnd.google-apps.folder') DESC, lower(name), drive_file_id
         OFFSET $3 LIMIT $4
       `, [folderId, parentDriveId, offset, limit]);
-      return { parentName, parentDriveId: parentParentId, total: Number(result.rows[0]?.total_count ?? 0), items: result.rows.map((row) => ({ driveFileId: row.drive_file_id, name: row.name, mimeType: row.mime_type, modifiedTime: row.modified_time?.toISOString() ?? null, sizeBytes: row.size_bytes === null ? null : Number(row.size_bytes), matched: row.matched })) };
+      return { parentName, parentDriveId: parentParentId, total: Number(result.rows[0]?.total_count ?? 0), items: result.rows.map((row) => ({ driveFileId: row.drive_file_id, name: row.name, caption: row.caption, mimeType: row.mime_type, modifiedTime: row.modified_time?.toISOString() ?? null, sizeBytes: row.size_bytes === null ? null : Number(row.size_bytes), matched: row.matched })) };
     },
 
     async canAccessIndexedDriveFile(userId, folderId, driveFileId) {

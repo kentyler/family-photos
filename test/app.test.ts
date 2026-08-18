@@ -235,8 +235,8 @@ test("members can review reconciliation samples for their attached folder", () =
 test("members can browse indexed folders and open image cards", () => {
   const data = fakeData();
   data.getDriveBrowserPage = async () => ({ parentName: "Family Album", parentDriveId: null, total: 2, items: [
-    { driveFileId: "subfolder-1", name: "1940s", mimeType: "application/vnd.google-apps.folder", modifiedTime: null, sizeBytes: null, matched: false },
-    { driveFileId: "photo-1", name: "Portrait.jpg", mimeType: "image/jpeg", modifiedTime: null, sizeBytes: 1234, matched: true },
+    { driveFileId: "subfolder-1", name: "1940s", caption: null, mimeType: "application/vnd.google-apps.folder", modifiedTime: null, sizeBytes: null, matched: false },
+    { driveFileId: "photo-1", name: "Portrait.jpg", caption: "Claire and Larry", mimeType: "image/jpeg", modifiedTime: null, sizeBytes: 1234, matched: true },
   ] });
   return withServer(async (origin) => {
     const sessionCookie = await signIn(origin);
@@ -246,7 +246,8 @@ test("members can browse indexed folders and open image cards", () => {
     const html = await response.text();
     assert.match(html, /1940s/);
     assert.match(html, /Portrait\.jpg/);
-    assert.match(html, /Legacy details linked/);
+    assert.match(html, /Claire and Larry/);
+    assert.doesNotMatch(html, /Legacy details linked/);
     assert.match(html, /photo-viewer/);
     assert.match(html, /About this photograph/);
     assert.match(html, /Story or notes/);
