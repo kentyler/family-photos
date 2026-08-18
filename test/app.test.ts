@@ -247,6 +247,7 @@ test("members can browse indexed folders and open image cards", () => {
     assert.match(html, /1940s/);
     assert.match(html, /Portrait\.jpg/);
     assert.match(html, /Claire and Larry/);
+    assert.match(html, /title="Claire and Larry"/);
     assert.doesNotMatch(html, /Legacy details linked/);
     assert.match(html, /photo-viewer/);
     assert.match(html, /About this photograph/);
