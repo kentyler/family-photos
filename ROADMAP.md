@@ -1,6 +1,6 @@
 # Family Photo Archive — Living Project Plan
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 ## Purpose
 
@@ -116,15 +116,17 @@ Goal: turn a Drive file into an enrichable, collaborative archive item.
 
 Scope:
 
-- [ ] Stable photo identity across Drive rename or move operations.
-- [ ] Individual photo page.
-- [ ] Caption, notes/stories, and comments as distinct concepts.
+- [~] Stable photo identity across Drive rename or move operations.
+- [~] Individual photo page.
+- [~] Caption, notes/stories, and comments as distinct concepts.
 - [ ] Person identification.
 - [ ] Contributor attribution and edit history.
 - [ ] Dates and descriptive metadata.
 - [ ] Support uncertain or disputed information.
 
 Exit criteria: relatives can enrich the same photograph without overwriting one another or losing provenance.
+
+Current status: **in progress**. The lightbox is now a responsive two-pane photo workspace with the image beside editable caption and shared story/notes fields. Text is stored against the attached folder and stable Google Drive file ID, survives indexing rescans and Drive renames, records the latest contributor, and is membership-scoped. Comments and full edit history remain separate future concepts. A third pane is planned for rectangular regions identifying either people or things; person regions can later connect to canonical genealogy records.
 
 ### Step 5 — Family-tree integration
 
@@ -191,6 +193,8 @@ These may be useful later, but they must build on the photo-person-family-tree l
 | 2026-08-17 | Reconcile Drive files by exact relative path and size, falling back only to a unique filename-and-size candidate. | Legacy SHA-256 hashes cannot be compared directly with Drive's MD5 metadata; conservative deterministic matching avoids silently attaching family knowledge to the wrong photograph. |
 | 2026-08-17 | Run Drive scans as persistent background jobs and validate matches through random sampling plus review of every ambiguous result. | Large folders outlive normal web requests; background progress prevents apparent hangs, while risk-based sampling provides practical assurance without manually checking hundreds of thousands of photos. |
 | 2026-08-17 | Store indexed Drive folders as first-class records rather than reconstructing navigation from photo paths. | Stable Drive IDs and explicit parent relationships handle duplicate names and future moves or renames without relying on a fragile path-derived hierarchy. |
+| 2026-08-18 | Use a two-pane photo workspace first, while reserving a later third pane for people, things, and genealogy context. | Caption and story entry can become useful immediately; rectangular subject regions need a distinct model and should support objects as well as faces. |
+| 2026-08-18 | Key editable photo records by attached folder and Google Drive file ID rather than an ephemeral scan row. | Drive IDs survive ordinary rename and move operations, and scan replacement must not erase family-contributed text. |
 
 ## Working agreement for maintaining this file
 

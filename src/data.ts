@@ -39,6 +39,7 @@ export type IndexedDriveFolder = { driveFolderId: string; parentDriveId: string;
 export type DriveScanJob = { id: string; status: "pending" | "running" | "completed" | "failed"; foldersScanned: number; itemsDiscovered: number; matchedItems: number | null; unmatchedItems: number | null; ambiguousItems: number | null; errorMessage: string | null };
 export type ReconciliationReviewItem = { name: string; relativePath: string; mimeType: string; sizeBytes: number | null; matchMethod: string | null; legacyPaths: string[] };
 export type DriveBrowserItem = { driveFileId: string; name: string; mimeType: string; modifiedTime: string | null; sizeBytes: number | null; matched: boolean };
+export type PhotoText = { caption: string; notes: string; updatedAt: string | null; updatedBy: string | null };
 
 export interface DataStore {
   isReady(): Promise<boolean>;
@@ -63,6 +64,8 @@ export interface DataStore {
   getReconciliationReview(userId: string, folderId: string, category: "matched" | "ambiguous" | "unmatched", offset: number, limit: number): Promise<{ total: number; items: ReconciliationReviewItem[] }>;
   getDriveBrowserPage(userId: string, folderId: string, parentDriveId: string, offset: number, limit: number): Promise<{ parentName: string; parentDriveId: string | null; total: number; items: DriveBrowserItem[] } | null>;
   canAccessIndexedDriveFile(userId: string, folderId: string, driveFileId: string): Promise<boolean>;
+  getPhotoText(userId: string, folderId: string, driveFileId: string): Promise<PhotoText | null>;
+  savePhotoText(userId: string, folderId: string, driveFileId: string, caption: string, notes: string): Promise<PhotoText | null>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -397,6 +400,33 @@ export function createPostgresDataStore(pool: Pool): DataStore {
     async canAccessIndexedDriveFile(userId, folderId, driveFileId) {
       const result = await pool.query(`SELECT 1 FROM indexed_drive_items i JOIN attached_drive_folders f ON f.id=i.attached_folder_id WHERE f.user_id=$1 AND f.id=$2 AND i.drive_file_id=$3`, [userId, folderId, driveFileId]);
       return Boolean(result.rowCount);
+    },
+
+    async getPhotoText(userId, folderId, driveFileId) {
+      const access = await pool.query("SELECT 1 FROM indexed_drive_items i JOIN attached_drive_folders f ON f.id=i.attached_folder_id WHERE f.user_id=$1 AND f.id=$2 AND i.drive_file_id=$3 AND i.mime_type LIKE 'image/%'", [userId, folderId, driveFileId]);
+      if (!access.rowCount) return null;
+      const result = await pool.query<{ caption: string; notes: string; updated_at: Date; updated_by_name: string }>(`
+        SELECT p.caption, p.notes, p.updated_at, u.display_name AS updated_by_name
+        FROM photo_records p JOIN users u ON u.id=p.updated_by
+        WHERE p.attached_folder_id=$1 AND p.drive_file_id=$2
+      `, [folderId, driveFileId]);
+      const row = result.rows[0];
+      return row ? { caption: row.caption, notes: row.notes, updatedAt: row.updated_at.toISOString(), updatedBy: row.updated_by_name } : { caption: "", notes: "", updatedAt: null, updatedBy: null };
+    },
+
+    async savePhotoText(userId, folderId, driveFileId, caption, notes) {
+      const access = await pool.query("SELECT 1 FROM indexed_drive_items i JOIN attached_drive_folders f ON f.id=i.attached_folder_id WHERE f.user_id=$1 AND f.id=$2 AND i.drive_file_id=$3 AND i.mime_type LIKE 'image/%'", [userId, folderId, driveFileId]);
+      if (!access.rowCount) return null;
+      const result = await pool.query<{ caption: string; notes: string; updated_at: Date }>(`
+        INSERT INTO photo_records (attached_folder_id, drive_file_id, caption, notes, created_by, updated_by)
+        VALUES ($1, $2, $3, $4, $5, $5)
+        ON CONFLICT (attached_folder_id, drive_file_id) DO UPDATE SET
+          caption=EXCLUDED.caption, notes=EXCLUDED.notes, updated_by=EXCLUDED.updated_by, updated_at=now()
+        RETURNING caption, notes, updated_at
+      `, [folderId, driveFileId, caption, notes, userId]);
+      const user = await pool.query<{ display_name: string }>("SELECT display_name FROM users WHERE id=$1", [userId]);
+      const row = result.rows[0]!;
+      return { caption: row.caption, notes: row.notes, updatedAt: row.updated_at.toISOString(), updatedBy: user.rows[0]?.display_name ?? null };
     },
 
     async listArchives(userId) {

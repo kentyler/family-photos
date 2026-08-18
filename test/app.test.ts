@@ -43,6 +43,8 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async getReconciliationReview() { return { total: 0, items: [] }; },
     async getDriveBrowserPage() { return { parentName: "Family Album", parentDriveId: null, total: 0, items: [] }; },
     async canAccessIndexedDriveFile() { return true; },
+    async getPhotoText() { return { caption: "", notes: "", updatedAt: null, updatedBy: null }; },
+    async savePhotoText(_userId, _folderId, _fileId, caption, notes) { return { caption, notes, updatedAt: "2026-08-18T00:00:00.000Z", updatedBy: "Ken" }; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -246,5 +248,30 @@ test("members can browse indexed folders and open image cards", () => {
     assert.match(html, /Portrait\.jpg/);
     assert.match(html, /Legacy details linked/);
     assert.match(html, /photo-viewer/);
+    assert.match(html, /About this photograph/);
+    assert.match(html, /Story or notes/);
+    assert.match(html, /data-id="photo-1"/);
+  }, { data, identity });
+});
+
+test("members can load and save caption and story text for an indexed photo", () => {
+  const data = fakeData();
+  data.getPhotoText = async (_userId, folderId, fileId) => {
+    assert.equal(folderId, "folder-1");
+    assert.equal(fileId, "photo-1");
+    return { caption: "Family picnic", notes: "Taken near the old house.", updatedAt: null, updatedBy: null };
+  };
+  return withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    const loaded = await fetch(`${origin}/api/drive/folders/folder-1/photos/photo-1/text`, { headers: { cookie: sessionCookie } });
+    assert.equal(loaded.status, 200);
+    assert.deepEqual(await loaded.json(), { caption: "Family picnic", notes: "Taken near the old house.", updatedAt: null, updatedBy: null });
+    const saved = await fetch(`${origin}/api/drive/folders/folder-1/photos/photo-1/text`, {
+      method: "PUT",
+      headers: { cookie: sessionCookie, "content-type": "application/json" },
+      body: JSON.stringify({ caption: "Summer picnic", notes: "Grandma remembered the red blanket." }),
+    });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(await saved.json(), { caption: "Summer picnic", notes: "Grandma remembered the red blanket.", updatedAt: "2026-08-18T00:00:00.000Z", updatedBy: "Ken" });
   }, { data, identity });
 });
