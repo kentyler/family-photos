@@ -53,6 +53,7 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async deletePhotoSubjectRegion() { return true; },
     async searchPeople(_userId, query) { return query ? [{ id: "person-1", primaryName: "Claire Atwood", aliases: ["Claire Atwood", "Grandma Claire"] }] : []; },
     async getPersonExplorer(_userId, personId) { return personId === "person-1" ? { id: personId, primaryName: "Claire Atwood", aliases: ["Claire Atwood", "Grandma Claire"], parents: [], spouses: [], children: [], photos: [] } : null; },
+    async addFamilyRelationship() { return true; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -329,6 +330,10 @@ test("members can search people and open the genealogy explorer", () => {
     assert.match(html, /Marriages/);
     assert.match(html, /people-photo-grid/);
     assert.match(html, /Photo folders/);
+    assert.match(html, /Add marriage/);
+    assert.match(html, /Add child/);
+    const relationship = await fetch(`${origin}/api/people/person-1/relationships`, { method: "POST", headers: { cookie: sessionCookie, "content-type": "application/json" }, body: JSON.stringify({ relationshipType: "spouse", relatedPersonId: "person-2", dateText: "June 1952" }) });
+    assert.equal(relationship.status, 201);
     assert.match(html, /View →/);
     assert.match(html, /data\.people\.length===1/);
     assert.match(html, /That person could not be opened/);

@@ -42,7 +42,7 @@ export type DriveBrowserItem = { driveFileId: string; name: string; caption: str
 export type PhotoText = { caption: string; notes: string; updatedAt: string | null; updatedBy: string | null };
 export type PersonAliasChoice = { personId: string; aliasId: string; alias: string; isPrimary: boolean };
 export type PhotoSubjectRegion = { id: string; subjectType: "person" | "thing"; personId: string | null; aliasId: string | null; label: string; x: number; y: number; width: number; height: number; createdBy: string; createdAt: string };
-export type PersonSearchResult = { id: string; primaryName: string; aliases: string[] };
+export type PersonSearchResult = { id: string; primaryName: string; aliases: string[]; relationshipDate?: string | null };
 export type PersonExplorer = { id: string; primaryName: string; aliases: string[]; parents: PersonSearchResult[]; spouses: PersonSearchResult[]; children: PersonSearchResult[]; photos: Array<{ folderId: string; driveFileId: string; parentDriveId: string; name: string; caption: string }> };
 
 export interface DataStore {
@@ -78,6 +78,7 @@ export interface DataStore {
   deletePhotoSubjectRegion(userId: string, folderId: string, driveFileId: string, regionId: string): Promise<boolean>;
   searchPeople(userId: string, query: string, limit: number): Promise<PersonSearchResult[]>;
   getPersonExplorer(userId: string, personId: string): Promise<PersonExplorer | null>;
+  addFamilyRelationship(userId: string, personId: string, relatedPersonId: string, relationshipType: "spouse" | "parent", dateText: string | null): Promise<boolean>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -546,15 +547,19 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       `, [personId]);
       const person = people.rows[0];
       if (!person) return null;
-      const relationships = person.legacy_person_id ? await pool.query(`
-        SELECT r.type, related.id, COALESCE(max(a.alias) FILTER (WHERE a.is_primary), min(a.alias)) AS primary_name,
+      const applicationRelationships = await pool.query(`
+        WITH related AS (
+          SELECT CASE WHEN r.relationship_type='spouse' AND r.related_person_id=$1 THEN r.person_id ELSE r.related_person_id END AS related_id,
+                 CASE WHEN r.relationship_type='spouse' THEN 'spouse' WHEN r.person_id=$1 THEN 'parent' ELSE 'child' END AS type,
+                 r.date_text AS relationship_date
+          FROM family_relationships r
+          WHERE r.person_id=$1 OR r.related_person_id=$1
+        )
+        SELECT x.type, x.relationship_date, p.id, COALESCE(max(a.alias) FILTER (WHERE a.is_primary), min(a.alias)) AS primary_name,
                array_agg(a.alias ORDER BY a.is_primary DESC, lower(a.alias)) AS aliases
-        FROM legacy_catalog.relationships r
-        JOIN family_people related ON related.legacy_person_id=r.related_id
-        JOIN family_person_aliases a ON a.person_id=related.id
-        WHERE r.person_id=$1 AND r.type IN ('parent','father','mother','spouse','child')
-        GROUP BY r.type, related.id ORDER BY r.type, lower(COALESCE(max(a.alias) FILTER (WHERE a.is_primary), min(a.alias)))
-      `, [person.legacy_person_id]) : { rows: [] };
+        FROM related x JOIN family_people p ON p.id=x.related_id JOIN family_person_aliases a ON a.person_id=p.id
+        GROUP BY x.type,x.relationship_date,p.id
+      `, [personId]);
       const photos = await pool.query(`
         WITH identified AS (
           SELECT r.attached_folder_id, r.drive_file_id FROM photo_subject_regions r WHERE r.person_id=$1
@@ -572,8 +577,18 @@ export function createPostgresDataStore(pool: Pool): DataStore {
         LEFT JOIN photo_records pr ON pr.attached_folder_id=i.attached_folder_id AND pr.drive_file_id=i.drive_file_id
         WHERE f.user_id=$2 ORDER BY lower(COALESCE(pr.caption,i.name)), i.drive_file_id
       `, [personId, userId]);
-      const related = relationships.rows.map(mapPersonSearchResult);
+      const related = applicationRelationships.rows.map(mapPersonSearchResult);
       return { id: person.id, primaryName: person.primary_name, aliases: person.aliases, parents: related.filter((row: any) => row.type === "child"), spouses: related.filter((row: any) => row.type === "spouse"), children: related.filter((row: any) => row.type === "parent" || row.type === "father" || row.type === "mother"), photos: photos.rows.map((row) => ({ folderId: row.folder_id, driveFileId: row.drive_file_id, parentDriveId: row.parent_drive_id, name: row.name, caption: row.caption })) };
+    },
+
+    async addFamilyRelationship(userId, personId, relatedPersonId, relationshipType, dateText) {
+      if (!await this.getApplicationRole(userId) || personId === relatedPersonId) return false;
+      const result = await pool.query(`
+        INSERT INTO family_relationships (relationship_type,person_id,related_person_id,date_text,created_by)
+        SELECT $1,$2,$3,$4,$5 WHERE EXISTS (SELECT 1 FROM family_people WHERE id=$2) AND EXISTS (SELECT 1 FROM family_people WHERE id=$3)
+        ON CONFLICT DO NOTHING RETURNING id
+      `, [relationshipType, personId, relatedPersonId, dateText, userId]);
+      return Boolean(result.rowCount) || Boolean((await pool.query(`SELECT 1 FROM family_relationships WHERE relationship_type=$1 AND ((person_id=$2 AND related_person_id=$3) OR ($1='spouse' AND person_id=$3 AND related_person_id=$2))`, [relationshipType, personId, relatedPersonId])).rowCount);
     },
 
     async listArchives(userId) {
@@ -612,5 +627,5 @@ function mapPhotoSubjectRegion(row: any): PhotoSubjectRegion {
 }
 
 function mapPersonSearchResult(row: any): PersonSearchResult & { type?: string } {
-  return { id: row.id, primaryName: row.primary_name, aliases: row.aliases, ...(row.type ? { type: row.type } : {}) };
+  return { id: row.id, primaryName: row.primary_name, aliases: row.aliases, ...(row.relationship_date ? { relationshipDate: row.relationship_date } : {}), ...(row.type ? { type: row.type } : {}) };
 }

@@ -134,8 +134,8 @@ Goal: connect photo identifications to canonical family identities.
 
 Scope:
 
-- [ ] Import or create a family tree.
-- [ ] Canonical person profiles with aliases and relationships.
+- [~] Import or create a family tree.
+- [~] Canonical person profiles with aliases and relationships.
 - [ ] Match photo identities to canonical people.
 - [ ] Prevent or reconcile duplicate people.
 - [ ] Represent tentative matches and conflicting evidence.
@@ -157,6 +157,8 @@ Scope:
 Exit criteria: users can repeatedly move between photos and people without encountering disconnected screens or losing their place.
 
 Current status: **in progress**. A person-centered Family Explorer now searches canonical people by any alias. A single or exact alias match opens automatically, multiple matches are presented as explicit “View” choices, and detail-loading failures are visible instead of silent. Its right pane shows the focused person's aliases, parents, marriages, and children, and relatives can be selected to change focus. Its left pane lists hosted thumbnails for both newly marked regions and reconciled legacy photo-person identifications. Photo links return to the existing photo workspace and automatically open the selected image; the browser back action preserves the focused person. Person identifications in the photo workspace link directly to the explorer with that canonical person focused. A consistent page header links to the archive, Drive folders, and People & family throughout the application. Editing relationships and richer tree visualization remain future work.
+
+Marriage and child editors now let members link an existing canonical person or explicitly create a new person, with an optional marriage date. Preserved legacy marriages and parent-child links are normalized into the same application-owned relationship table used by new entries, rather than being maintained as a separate live data source. Marriage links resolve bidirectionally, and parent-child links appear from both the parent's and child's focused views.
 
 ## Deferred until the core loop is stable
 
@@ -197,6 +199,7 @@ These may be useful later, but they must build on the photo-person-family-tree l
 | 2026-08-17 | Store indexed Drive folders as first-class records rather than reconstructing navigation from photo paths. | Stable Drive IDs and explicit parent relationships handle duplicate names and future moves or renames without relying on a fragile path-derived hierarchy. |
 | 2026-08-18 | Use a two-pane photo workspace first, while reserving a later third pane for people, things, and genealogy context. | Caption and story entry can become useful immediately; rectangular subject regions need a distinct model and should support objects as well as faces. |
 | 2026-08-18 | Key editable photo records by attached folder and Google Drive file ID rather than an ephemeral scan row. | Drive IDs survive ordinary rename and move operations, and scan replacement must not erase family-contributed text. |
+| 2026-08-18 | Normalize preserved and newly entered family relationships into one application-owned relationship table. | One authoritative model prevents legacy and new marriages or parent-child links from diverging while retaining source provenance. |
 
 ## Working agreement for maintaining this file
 
