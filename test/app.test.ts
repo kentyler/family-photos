@@ -263,7 +263,8 @@ test("members can browse indexed folders and open image cards", () => {
     assert.match(html, /Mark a subject/);
     assert.match(html, /subject-canvas/);
     assert.match(html, /Hide marks/);
-    for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new Function(script[1]));
+    assert.match(html, /minmax\(460px,2fr\)/);
+    for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new Function(script[1] ?? ""));
   }, { data, identity });
 });
 
