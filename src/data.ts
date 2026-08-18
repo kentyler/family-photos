@@ -230,6 +230,13 @@ export function createPostgresDataStore(pool: Pool): DataStore {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
           `, [folderId, item.driveFileId, item.parentDriveId, item.name, item.mimeType, item.relativePath, item.md5Checksum, item.modifiedTime, item.sizeBytes]);
         }
+        await client.query(`
+          INSERT INTO photo_records (attached_folder_id, drive_file_id, caption, notes, created_by, updated_by)
+          SELECT i.attached_folder_id, i.drive_file_id, i.name, '', $2, $2
+          FROM indexed_drive_items i
+          WHERE i.attached_folder_id=$1 AND i.mime_type LIKE 'image/%'
+          ON CONFLICT (attached_folder_id, drive_file_id) DO NOTHING
+        `, [folderId, userId]);
         await client.query("UPDATE attached_drive_folders SET last_scanned_at = now() WHERE id = $1", [folderId]);
         await client.query("COMMIT");
         return items.length;
@@ -405,13 +412,16 @@ export function createPostgresDataStore(pool: Pool): DataStore {
     async getPhotoText(userId, folderId, driveFileId) {
       const access = await pool.query("SELECT 1 FROM indexed_drive_items i JOIN attached_drive_folders f ON f.id=i.attached_folder_id WHERE f.user_id=$1 AND f.id=$2 AND i.drive_file_id=$3 AND i.mime_type LIKE 'image/%'", [userId, folderId, driveFileId]);
       if (!access.rowCount) return null;
-      const result = await pool.query<{ caption: string; notes: string; updated_at: Date; updated_by_name: string }>(`
-        SELECT p.caption, p.notes, p.updated_at, u.display_name AS updated_by_name
-        FROM photo_records p JOIN users u ON u.id=p.updated_by
-        WHERE p.attached_folder_id=$1 AND p.drive_file_id=$2
+      const result = await pool.query<{ caption: string; notes: string; updated_at: Date | null; updated_by_name: string | null }>(`
+        SELECT COALESCE(p.caption, i.name) AS caption, COALESCE(p.notes, '') AS notes,
+               p.updated_at, u.display_name AS updated_by_name
+        FROM indexed_drive_items i
+        LEFT JOIN photo_records p ON p.attached_folder_id=i.attached_folder_id AND p.drive_file_id=i.drive_file_id
+        LEFT JOIN users u ON u.id=p.updated_by
+        WHERE i.attached_folder_id=$1 AND i.drive_file_id=$2
       `, [folderId, driveFileId]);
       const row = result.rows[0];
-      return row ? { caption: row.caption, notes: row.notes, updatedAt: row.updated_at.toISOString(), updatedBy: row.updated_by_name } : { caption: "", notes: "", updatedAt: null, updatedBy: null };
+      return row ? { caption: row.caption, notes: row.notes, updatedAt: row.updated_at?.toISOString() ?? null, updatedBy: row.updated_by_name } : null;
     },
 
     async savePhotoText(userId, folderId, driveFileId, caption, notes) {

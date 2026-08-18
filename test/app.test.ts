@@ -251,6 +251,7 @@ test("members can browse indexed folders and open image cards", () => {
     assert.match(html, /About this photograph/);
     assert.match(html, /Story or notes/);
     assert.match(html, /data-id="photo-1"/);
+    assert.match(html, /viewer-caption/);
   }, { data, identity });
 });
 
