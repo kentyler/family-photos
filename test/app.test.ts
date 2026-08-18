@@ -40,6 +40,7 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async createDriveScanJob() { return { id: "job-1", status: "pending", foldersScanned: 0, itemsDiscovered: 0, matchedItems: null, unmatchedItems: null, ambiguousItems: null, errorMessage: null }; },
     async updateDriveScanJob() {},
     async getLatestDriveScanJob() { return null; },
+    async getReconciliationReview() { return { total: 0, items: [] }; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -204,4 +205,23 @@ test("a connected member can attach a Picker-selected Drive folder", () => {
     assert.equal(attached.status, 201);
     assert.deepEqual(await attached.json(), { id: "folder-1", driveFolderId: "drive-folder-1", name: "Grandma's Photos", attachedAt: "2026-08-17T00:00:00.000Z" });
   }, { data, identity, driveAuthorization });
+});
+
+test("members can review reconciliation samples for their attached folder", () => {
+  const data = fakeData();
+  data.getReconciliationReview = async (_userId, folderId, category) => {
+    assert.equal(folderId, "folder-1");
+    assert.equal(category, "ambiguous");
+    return { total: 1, items: [{ name: "portrait.jpg", relativePath: "Album/portrait.jpg", mimeType: "image/jpeg", sizeBytes: 1234, matchMethod: null, legacyPaths: ["old/portrait.jpg", "copy/portrait.jpg"] }] };
+  };
+  return withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    await data.attachDriveFolder("user-1", "drive-folder-1", "Family Album");
+    const response = await fetch(`${origin}/drive/folders/folder-1/reconciliation?category=ambiguous`, { headers: { cookie: sessionCookie } });
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /Family Album/);
+    assert.match(html, /Album\/portrait\.jpg/);
+    assert.match(html, /old\/portrait\.jpg/);
+  }, { data, identity });
 });

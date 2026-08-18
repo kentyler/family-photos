@@ -36,6 +36,7 @@ export type IndexedDriveItem = {
   sizeBytes: number | null;
 };
 export type DriveScanJob = { id: string; status: "pending" | "running" | "completed" | "failed"; foldersScanned: number; itemsDiscovered: number; matchedItems: number | null; unmatchedItems: number | null; ambiguousItems: number | null; errorMessage: string | null };
+export type ReconciliationReviewItem = { name: string; relativePath: string; mimeType: string; sizeBytes: number | null; matchMethod: string | null; legacyPaths: string[] };
 
 export interface DataStore {
   isReady(): Promise<boolean>;
@@ -57,6 +58,7 @@ export interface DataStore {
   createDriveScanJob(userId: string, folderId: string): Promise<DriveScanJob>;
   updateDriveScanJob(jobId: string, update: Partial<Omit<DriveScanJob, "id">>): Promise<void>;
   getLatestDriveScanJob(userId: string, folderId: string): Promise<DriveScanJob | null>;
+  getReconciliationReview(userId: string, folderId: string, category: "matched" | "ambiguous" | "unmatched", offset: number, limit: number): Promise<{ total: number; items: ReconciliationReviewItem[] }>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -313,6 +315,45 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       return result.rows[0] ? mapScanJob(result.rows[0]) : null;
     },
 
+    async getReconciliationReview(userId, folderId, category, offset, limit) {
+      if (category === "matched") {
+        const totalResult = await pool.query<{ count: string }>(`
+          SELECT count(*) FROM legacy_drive_matches m
+          JOIN indexed_drive_items i ON i.id=m.indexed_item_id
+          JOIN attached_drive_folders f ON f.id=i.attached_folder_id
+          WHERE f.user_id=$1 AND f.id=$2
+        `, [userId, folderId]);
+        const result = await pool.query<{ name: string; relative_path: string; mime_type: string; size_bytes: string | null; match_method: string; legacy_paths: string[] }>(`
+          SELECT i.name, i.relative_path, i.mime_type, i.size_bytes, m.match_method,
+                 ARRAY[COALESCE(l.original_path, l.filename)] AS legacy_paths
+          FROM legacy_drive_matches m
+          JOIN indexed_drive_items i ON i.id=m.indexed_item_id
+          JOIN attached_drive_folders f ON f.id=i.attached_folder_id
+          JOIN legacy_catalog.files l ON l.id=m.legacy_file_id
+          WHERE f.user_id=$1 AND f.id=$2
+          ORDER BY random() LIMIT $3
+        `, [userId, folderId, limit]);
+        return { total: Number(totalResult.rows[0]?.count ?? 0), items: result.rows.map(mapReviewItem) };
+      }
+      const result = await pool.query<{ total_count: string; name: string; relative_path: string; mime_type: string; size_bytes: string | null; legacy_paths: string[] }>(`
+        WITH review AS (
+          SELECT i.id, i.name, i.relative_path, i.mime_type, i.size_bytes,
+                 count(l.id)::int AS candidate_count,
+                 COALESCE(array_agg(COALESCE(l.original_path, l.filename) ORDER BY l.id) FILTER (WHERE l.id IS NOT NULL), ARRAY[]::text[]) AS legacy_paths
+          FROM indexed_drive_items i
+          JOIN attached_drive_folders f ON f.id=i.attached_folder_id
+          LEFT JOIN legacy_drive_matches m ON m.indexed_item_id=i.id
+          LEFT JOIN legacy_catalog.files l ON lower(l.filename)=lower(i.name) AND l.size_bytes IS NOT DISTINCT FROM i.size_bytes
+          WHERE f.user_id=$1 AND f.id=$2 AND m.indexed_item_id IS NULL
+          GROUP BY i.id
+        )
+        SELECT count(*) OVER () AS total_count, name, relative_path, mime_type, size_bytes, legacy_paths
+        FROM review WHERE ($3='ambiguous' AND candidate_count > 1) OR ($3='unmatched' AND candidate_count <= 1)
+        ORDER BY relative_path, name OFFSET $4 LIMIT $5
+      `, [userId, folderId, category, offset, limit]);
+      return { total: Number(result.rows[0]?.total_count ?? 0), items: result.rows.map((row) => mapReviewItem({ ...row, match_method: null })) };
+    },
+
     async listArchives(userId) {
       const result = await pool.query<{ id: string; name: string; role: ArchiveMembership["role"] }>(`
         SELECT a.id, a.name, m.role
@@ -338,4 +379,8 @@ export function createPostgresDataStore(pool: Pool): DataStore {
 
 function mapScanJob(row: any): DriveScanJob {
   return { id: row.id, status: row.status, foldersScanned: row.folders_scanned, itemsDiscovered: row.items_discovered, matchedItems: row.matched_items, unmatchedItems: row.unmatched_items, ambiguousItems: row.ambiguous_items, errorMessage: row.error_message };
+}
+
+function mapReviewItem(row: { name: string; relative_path: string; mime_type: string; size_bytes: string | null; match_method: string | null; legacy_paths: string[] }): ReconciliationReviewItem {
+  return { name: row.name, relativePath: row.relative_path, mimeType: row.mime_type, sizeBytes: row.size_bytes === null ? null : Number(row.size_bytes), matchMethod: row.match_method, legacyPaths: row.legacy_paths };
 }

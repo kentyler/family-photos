@@ -245,10 +245,28 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
       const foldersWithCounts = await Promise.all(folders.map(async (folder) => ({ folder, count: await data!.countIndexedDriveItems(request.session.userId!, folder.id), matched: await data!.countLegacyDriveMatches(request.session.userId!, folder.id), job: await data!.getLatestDriveScanJob(request.session.userId!, folder.id) })));
       const active = foldersWithCounts.some(({ job }) => job?.status === "pending" || job?.status === "running");
       const list = folders.length
-        ? `<ul>${foldersWithCounts.map(({ folder, count, matched, job }) => `<li><strong>${escapeHtml(folder.name)}</strong> — ${count} indexed, ${matched} matched to the legacy catalog. ${scanStatus(job)} ${(job?.status === "pending" || job?.status === "running") ? "" : `<form class="inline" method="post" action="/api/drive/folders/${folder.id}/rescan"><button class="secondary" type="submit">${count ? "Rescan and reconcile" : "Scan and reconcile"}</button></form>`}</li>`).join("")}</ul>`
+        ? `<ul>${foldersWithCounts.map(({ folder, count, matched, job }) => `<li><strong>${escapeHtml(folder.name)}</strong> — ${count} indexed, ${matched} matched to the legacy catalog. ${scanStatus(job)} ${(job?.status === "pending" || job?.status === "running") ? "" : `<form class="inline" method="post" action="/api/drive/folders/${folder.id}/rescan"><button class="secondary" type="submit">${count ? "Rescan and reconcile" : "Scan and reconcile"}</button></form>${count ? ` <a href="/drive/folders/${folder.id}/reconciliation">Review reconciliation</a>` : ""}`}</li>`).join("")}</ul>`
         : "<p>No folders attached yet.</p>";
       const pickerReady = Boolean(config.googlePickerApiKey && config.googleCloudProjectNumber);
       return response.type("html").send(page(`<p class="eyebrow">Google Drive</p><h1>Photo folders</h1>${active ? '<p class="muted">Scanning continues in the background. This page refreshes automatically.</p>' : ""}${list}${pickerReady ? '<button id="choose-folder" type="button">Choose a folder</button><p id="picker-message" class="muted"></p>' : '<p>Folder selection needs one final Google Cloud setting.</p>'}<p><a href="/drive/connect">Reconnect Google Drive</a></p><p><a href="/app">Back to archive</a></p>${active ? '<script>setTimeout(()=>location.reload(),10000)</script>' : ""}${pickerReady ? pickerScript() : ""}`));
+    } catch (error) { next(error); }
+  });
+
+  app.get("/drive/folders/:folderId/reconciliation", requireMember, async (request, response, next) => {
+    try {
+      const folderId = String(request.params.folderId);
+      const folder = await data!.getAttachedFolder(request.session.userId!, folderId);
+      if (!folder) return response.status(404).json({ error: "folder_not_found" });
+      const requested = String(request.query.category ?? "matched");
+      const category = requested === "ambiguous" || requested === "unmatched" ? requested : "matched";
+      const pageNumber = Math.max(1, Number.parseInt(String(request.query.page ?? "1"), 10) || 1);
+      const pageSize = category === "matched" ? 20 : 100;
+      const review = await data!.getReconciliationReview(request.session.userId!, folderId, category, (pageNumber - 1) * pageSize, pageSize);
+      const tabs = (["matched", "ambiguous", "unmatched"] as const).map((value) => `<a href="?category=${value}">${value === "matched" ? "Random matched sample" : value[0]!.toUpperCase() + value.slice(1)}</a>`).join(" · ");
+      const rows = review.items.map((item) => `<tr><td>${escapeHtml(item.relativePath || item.name)}</td><td>${escapeHtml(item.mimeType)}</td><td>${item.sizeBytes ?? "—"}</td><td>${escapeHtml(item.matchMethod ?? category)}</td><td>${item.legacyPaths.length ? item.legacyPaths.map(escapeHtml).join("<br>") : "No legacy candidate"}</td></tr>`).join("");
+      const next = category !== "matched" && pageNumber * pageSize < review.total ? ` <a href="?category=${category}&page=${pageNumber + 1}">Next page</a>` : "";
+      const previous = category !== "matched" && pageNumber > 1 ? `<a href="?category=${category}&page=${pageNumber - 1}">Previous page</a> ` : "";
+      return response.type("html").send(page(`<p class="eyebrow">Reconciliation review</p><h1>${escapeHtml(folder.name)}</h1><p>${tabs}</p><p>Showing ${review.items.length} of ${review.total} ${category} items.${category === "matched" ? " Refresh this page for another random sample." : ""}</p><table><thead><tr><th>Drive path</th><th>Type</th><th>Bytes</th><th>Result</th><th>Legacy path candidates</th></tr></thead><tbody>${rows}</tbody></table><p>${previous}${next}</p><p><a href="/drive/folders">Back to photo folders</a></p>`));
     } catch (error) { next(error); }
   });
 
