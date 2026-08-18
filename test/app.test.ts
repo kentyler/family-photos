@@ -269,6 +269,9 @@ test("members can browse indexed folders and open image cards", () => {
     assert.match(html, /flexWrap="nowrap"/);
     assert.match(html, /Mark another subject/);
     assert.match(html, /subject-list\{max-height:15rem;overflow-y:auto/);
+    assert.match(html, /Main navigation/);
+    assert.match(html, /People &amp; family/);
+    assert.match(html, /people\?person=/);
     for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new Function(script[1] ?? ""));
   }, { data, identity });
 });
@@ -325,6 +328,7 @@ test("members can search people and open the genealogy explorer", () => {
     assert.match(html, /Family explorer/);
     assert.match(html, /Marriages/);
     assert.match(html, /people-photo-grid/);
+    assert.match(html, /Photo folders/);
     assert.match(html, /View →/);
     assert.match(html, /data\.people\.length===1/);
     assert.match(html, /That person could not be opened/);
