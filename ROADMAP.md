@@ -156,7 +156,7 @@ Scope:
 
 Exit criteria: users can repeatedly move between photos and people without encountering disconnected screens or losing their place.
 
-Current status: **in progress**. A person-centered Family Explorer now searches canonical people by any alias. Its right pane shows the focused person's aliases, parents, marriages, and children, and relatives can be selected to change focus. Its left pane lists hosted thumbnails for both newly marked regions and reconciled legacy photo-person identifications. Photo links return to the existing photo workspace and automatically open the selected image; the browser back action preserves the focused person. Editing relationships and richer tree visualization remain future work.
+Current status: **in progress**. A person-centered Family Explorer now searches canonical people by any alias. A single or exact alias match opens automatically, multiple matches are presented as explicit “View” choices, and detail-loading failures are visible instead of silent. Its right pane shows the focused person's aliases, parents, marriages, and children, and relatives can be selected to change focus. Its left pane lists hosted thumbnails for both newly marked regions and reconciled legacy photo-person identifications. Photo links return to the existing photo workspace and automatically open the selected image; the browser back action preserves the focused person. Editing relationships and richer tree visualization remain future work.
 
 ## Deferred until the core loop is stable
 

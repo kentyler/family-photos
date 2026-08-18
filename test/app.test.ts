@@ -325,5 +325,8 @@ test("members can search people and open the genealogy explorer", () => {
     assert.match(html, /Family explorer/);
     assert.match(html, /Marriages/);
     assert.match(html, /people-photo-grid/);
+    assert.match(html, /View →/);
+    assert.match(html, /data\.people\.length===1/);
+    assert.match(html, /That person could not be opened/);
   }, { data, identity });
 });
