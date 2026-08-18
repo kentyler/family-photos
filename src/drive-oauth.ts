@@ -8,6 +8,7 @@ export interface DriveAuthorizationClient {
   getAccessToken(refreshToken: string): Promise<string>;
   getFolder(accessToken: string, folderId: string): Promise<{ id: string; name: string }>;
   listChildren(accessToken: string, folderId: string): Promise<Array<{ id: string; name: string; mimeType: string; modifiedTime: string | null; sizeBytes: number | null; md5Checksum: string | null }>>;
+  getFileResponse(accessToken: string, fileId: string, thumbnail: boolean): Promise<Response>;
 }
 
 export function createDriveAuthorizationClient(options: { clientId: string; clientSecret: string; appOrigin: string }): DriveAuthorizationClient {
@@ -78,6 +79,17 @@ export function createDriveAuthorizationClient(options: { clientId: string; clie
         pageToken = page.nextPageToken;
       } while (pageToken);
       return files;
+    },
+    async getFileResponse(accessToken, fileId, thumbnail) {
+      const headers = { authorization: `Bearer ${accessToken}` };
+      if (thumbnail) {
+        const metadata = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=thumbnailLink`, { headers });
+        if (!metadata.ok) throw new Error(`Google Drive thumbnail lookup failed (${metadata.status})`);
+        const { thumbnailLink } = await metadata.json() as { thumbnailLink?: string };
+        if (!thumbnailLink) return new Response(null, { status: 404 });
+        return fetch(thumbnailLink.replace(/=s\d+$/, "=s480"), { headers });
+      }
+      return fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, { headers });
     },
   };
 }

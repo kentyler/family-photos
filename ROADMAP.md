@@ -99,14 +99,16 @@ Goal: deliver a dependable, read-only photo browsing experience.
 
 Scope:
 
-- [ ] Navigate attached folder hierarchies.
-- [ ] Responsive thumbnail grid with incremental loading.
+- [x] Navigate attached folder hierarchies.
+- [~] Responsive thumbnail grid with incremental loading.
 - [ ] Sorting and basic filtering.
-- [ ] Lightbox with previous/next navigation.
+- [x] Lightbox with previous/next navigation.
 - [ ] Preserve navigation context when returning from a photo.
 - [ ] Handle images, videos, missing files, and unsupported formats clearly.
 
 Exit criteria: a user can comfortably browse a large Drive collection without editing anything.
+
+Current status: **in progress**. The first production viewer slice uses the indexed Drive hierarchy for folder navigation, pages large folders in groups of 60, proxies private Drive thumbnails and originals only after membership and attached-folder checks, and opens images in an in-page viewer with mouse, keyboard, previous, and next navigation. Reconciliation status remains visible on photo cards but is no longer the primary workflow. Incremental loading, sorting, richer media handling, and navigation-context polish remain.
 
 ### Step 4 — Individual photo record
 

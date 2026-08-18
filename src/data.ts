@@ -37,6 +37,7 @@ export type IndexedDriveItem = {
 };
 export type DriveScanJob = { id: string; status: "pending" | "running" | "completed" | "failed"; foldersScanned: number; itemsDiscovered: number; matchedItems: number | null; unmatchedItems: number | null; ambiguousItems: number | null; errorMessage: string | null };
 export type ReconciliationReviewItem = { name: string; relativePath: string; mimeType: string; sizeBytes: number | null; matchMethod: string | null; legacyPaths: string[] };
+export type DriveBrowserItem = { driveFileId: string; name: string; mimeType: string; modifiedTime: string | null; sizeBytes: number | null; matched: boolean };
 
 export interface DataStore {
   isReady(): Promise<boolean>;
@@ -59,6 +60,8 @@ export interface DataStore {
   updateDriveScanJob(jobId: string, update: Partial<Omit<DriveScanJob, "id">>): Promise<void>;
   getLatestDriveScanJob(userId: string, folderId: string): Promise<DriveScanJob | null>;
   getReconciliationReview(userId: string, folderId: string, category: "matched" | "ambiguous" | "unmatched", offset: number, limit: number): Promise<{ total: number; items: ReconciliationReviewItem[] }>;
+  getDriveBrowserPage(userId: string, folderId: string, parentDriveId: string, offset: number, limit: number): Promise<{ parentName: string; parentDriveId: string | null; total: number; items: DriveBrowserItem[] } | null>;
+  canAccessIndexedDriveFile(userId: string, folderId: string, driveFileId: string): Promise<boolean>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -352,6 +355,33 @@ export function createPostgresDataStore(pool: Pool): DataStore {
         ORDER BY relative_path, name OFFSET $4 LIMIT $5
       `, [userId, folderId, category, offset, limit]);
       return { total: Number(result.rows[0]?.total_count ?? 0), items: result.rows.map((row) => mapReviewItem({ ...row, match_method: null })) };
+    },
+
+    async getDriveBrowserPage(userId, folderId, parentDriveId, offset, limit) {
+      const folder = await pool.query<{ drive_folder_id: string; name: string }>("SELECT drive_folder_id, name FROM attached_drive_folders WHERE id=$1 AND user_id=$2", [folderId, userId]);
+      if (!folder.rows[0]) return null;
+      let parentName = folder.rows[0].name;
+      let parentParentId: string | null = null;
+      if (parentDriveId !== folder.rows[0].drive_folder_id) {
+        const parent = await pool.query<{ name: string; parent_drive_id: string }>("SELECT name, parent_drive_id FROM indexed_drive_items WHERE attached_folder_id=$1 AND drive_file_id=$2 AND mime_type='application/vnd.google-apps.folder'", [folderId, parentDriveId]);
+        if (!parent.rows[0]) return null;
+        parentName = parent.rows[0].name;
+        parentParentId = parent.rows[0].parent_drive_id;
+      }
+      const result = await pool.query<{ total_count: string; drive_file_id: string; name: string; mime_type: string; modified_time: Date | null; size_bytes: string | null; matched: boolean }>(`
+        SELECT count(*) OVER () AS total_count, i.drive_file_id, i.name, i.mime_type, i.modified_time, i.size_bytes,
+               (m.indexed_item_id IS NOT NULL) AS matched
+        FROM indexed_drive_items i LEFT JOIN legacy_drive_matches m ON m.indexed_item_id=i.id
+        WHERE i.attached_folder_id=$1 AND i.parent_drive_id=$2
+        ORDER BY (i.mime_type='application/vnd.google-apps.folder') DESC, lower(i.name), i.drive_file_id
+        OFFSET $3 LIMIT $4
+      `, [folderId, parentDriveId, offset, limit]);
+      return { parentName, parentDriveId: parentParentId, total: Number(result.rows[0]?.total_count ?? 0), items: result.rows.map((row) => ({ driveFileId: row.drive_file_id, name: row.name, mimeType: row.mime_type, modifiedTime: row.modified_time?.toISOString() ?? null, sizeBytes: row.size_bytes === null ? null : Number(row.size_bytes), matched: row.matched })) };
+    },
+
+    async canAccessIndexedDriveFile(userId, folderId, driveFileId) {
+      const result = await pool.query(`SELECT 1 FROM indexed_drive_items i JOIN attached_drive_folders f ON f.id=i.attached_folder_id WHERE f.user_id=$1 AND f.id=$2 AND i.drive_file_id=$3`, [userId, folderId, driveFileId]);
+      return Boolean(result.rowCount);
     },
 
     async listArchives(userId) {

@@ -41,6 +41,8 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async updateDriveScanJob() {},
     async getLatestDriveScanJob() { return null; },
     async getReconciliationReview() { return { total: 0, items: [] }; },
+    async getDriveBrowserPage() { return { parentName: "Family Album", parentDriveId: null, total: 0, items: [] }; },
+    async canAccessIndexedDriveFile() { return true; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -163,6 +165,7 @@ test("Drive authorization is separate and stores an encrypted refresh token", ()
     async getAccessToken() { return "access-token"; },
     async getFolder(_accessToken: string, folderId: string) { return { id: folderId, name: "Family Album" }; },
     async listChildren() { return []; },
+    async getFileResponse() { return new Response(); },
   };
   return withServer(async (origin) => {
     const sessionCookie = await signIn(origin);
@@ -192,6 +195,7 @@ test("a connected member can attach a Picker-selected Drive folder", () => {
       return { id: folderId, name: "Grandma's Photos" };
     },
     async listChildren() { return []; },
+    async getFileResponse() { return new Response(); },
   };
   return withServer(async (origin) => {
     const sessionCookie = await signIn(origin);
@@ -223,5 +227,24 @@ test("members can review reconciliation samples for their attached folder", () =
     assert.match(html, /Family Album/);
     assert.match(html, /Album\/portrait\.jpg/);
     assert.match(html, /old\/portrait\.jpg/);
+  }, { data, identity });
+});
+
+test("members can browse indexed folders and open image cards", () => {
+  const data = fakeData();
+  data.getDriveBrowserPage = async () => ({ parentName: "Family Album", parentDriveId: null, total: 2, items: [
+    { driveFileId: "subfolder-1", name: "1940s", mimeType: "application/vnd.google-apps.folder", modifiedTime: null, sizeBytes: null, matched: false },
+    { driveFileId: "photo-1", name: "Portrait.jpg", mimeType: "image/jpeg", modifiedTime: null, sizeBytes: 1234, matched: true },
+  ] });
+  return withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    await data.attachDriveFolder("user-1", "drive-folder-1", "Family Album");
+    const response = await fetch(`${origin}/drive/folders/folder-1/browse`, { headers: { cookie: sessionCookie } });
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /1940s/);
+    assert.match(html, /Portrait\.jpg/);
+    assert.match(html, /Legacy details linked/);
+    assert.match(html, /photo-viewer/);
   }, { data, identity });
 });

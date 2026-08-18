@@ -2,6 +2,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import pg from "pg";
+import { Readable } from "node:stream";
 import type { AppConfig } from "./config.js";
 import { createPostgresDataStore, type DataStore, type DriveScanJob } from "./data.js";
 import { createGoogleIdentityClient, type IdentityClient } from "./oidc.js";
@@ -245,7 +246,7 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
       const foldersWithCounts = await Promise.all(folders.map(async (folder) => ({ folder, count: await data!.countIndexedDriveItems(request.session.userId!, folder.id), matched: await data!.countLegacyDriveMatches(request.session.userId!, folder.id), job: await data!.getLatestDriveScanJob(request.session.userId!, folder.id) })));
       const active = foldersWithCounts.some(({ job }) => job?.status === "pending" || job?.status === "running");
       const list = folders.length
-        ? `<ul>${foldersWithCounts.map(({ folder, count, matched, job }) => `<li><strong>${escapeHtml(folder.name)}</strong> — ${count} indexed, ${matched} matched to the legacy catalog. ${scanStatus(job)} ${(job?.status === "pending" || job?.status === "running") ? "" : `<form class="inline" method="post" action="/api/drive/folders/${folder.id}/rescan"><button class="secondary" type="submit">${count ? "Rescan and reconcile" : "Scan and reconcile"}</button></form>${count ? ` <a href="/drive/folders/${folder.id}/reconciliation">Review reconciliation</a>` : ""}`}</li>`).join("")}</ul>`
+        ? `<ul>${foldersWithCounts.map(({ folder, count, matched, job }) => `<li><strong>${escapeHtml(folder.name)}</strong> — ${count} indexed, ${matched} matched to the legacy catalog. ${scanStatus(job)} ${(job?.status === "pending" || job?.status === "running") ? "" : `<form class="inline" method="post" action="/api/drive/folders/${folder.id}/rescan"><button class="secondary" type="submit">${count ? "Rescan and reconcile" : "Scan and reconcile"}</button></form>${count ? ` <a class="button" href="/drive/folders/${folder.id}/browse">Browse photos</a> <a href="/drive/folders/${folder.id}/reconciliation">Review reconciliation</a>` : ""}`}</li>`).join("")}</ul>`
         : "<p>No folders attached yet.</p>";
       const pickerReady = Boolean(config.googlePickerApiKey && config.googleCloudProjectNumber);
       return response.type("html").send(page(`<p class="eyebrow">Google Drive</p><h1>Photo folders</h1>${active ? '<p class="muted">Scanning continues in the background. This page refreshes automatically.</p>' : ""}${list}${pickerReady ? '<button id="choose-folder" type="button">Choose a folder</button><p id="picker-message" class="muted"></p>' : '<p>Folder selection needs one final Google Cloud setting.</p>'}<p><a href="/drive/connect">Reconnect Google Drive</a></p><p><a href="/app">Back to archive</a></p>${active ? '<script>setTimeout(()=>location.reload(),10000)</script>' : ""}${pickerReady ? pickerScript() : ""}`));
@@ -267,6 +268,43 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
       const next = category !== "matched" && pageNumber * pageSize < review.total ? ` <a href="?category=${category}&page=${pageNumber + 1}">Next page</a>` : "";
       const previous = category !== "matched" && pageNumber > 1 ? `<a href="?category=${category}&page=${pageNumber - 1}">Previous page</a> ` : "";
       return response.type("html").send(page(`<p class="eyebrow">Reconciliation review</p><h1>${escapeHtml(folder.name)}</h1><p>${tabs}</p><p>Showing ${review.items.length} of ${review.total} ${category} items.${category === "matched" ? " Refresh this page for another random sample." : ""}</p><table><thead><tr><th>Drive path</th><th>Type</th><th>Bytes</th><th>Result</th><th>Legacy path candidates</th></tr></thead><tbody>${rows}</tbody></table><p>${previous}${next}</p><p><a href="/drive/folders">Back to photo folders</a></p>`));
+    } catch (error) { next(error); }
+  });
+
+  app.get("/drive/folders/:folderId/browse", requireMember, async (request, response, next) => {
+    try {
+      const folderId = String(request.params.folderId);
+      const folder = await data!.getAttachedFolder(request.session.userId!, folderId);
+      if (!folder) return response.status(404).json({ error: "folder_not_found" });
+      const parent = typeof request.query.parent === "string" ? request.query.parent : folder.driveFolderId;
+      const pageNumber = Math.max(1, Number.parseInt(String(request.query.page ?? "1"), 10) || 1);
+      const pageSize = 60;
+      const browserPage = await data!.getDriveBrowserPage(request.session.userId!, folderId, parent, (pageNumber - 1) * pageSize, pageSize);
+      if (!browserPage) return response.status(404).json({ error: "folder_not_found" });
+      const cards = browserPage.items.map((item) => item.mimeType === "application/vnd.google-apps.folder"
+        ? `<a class="photo-card folder-card" href="?parent=${encodeURIComponent(item.driveFileId)}"><span class="folder-icon">📁</span><strong>${escapeHtml(item.name)}</strong></a>`
+        : item.mimeType.startsWith("image/")
+          ? `<button class="photo-card image-card" data-name="${escapeHtml(item.name)}" data-full="/api/drive/folders/${folderId}/files/${encodeURIComponent(item.driveFileId)}/content"><img loading="lazy" src="/api/drive/folders/${folderId}/files/${encodeURIComponent(item.driveFileId)}/thumbnail" alt=""><span>${escapeHtml(item.name)}</span><small>${item.matched ? "Legacy details linked" : "Not linked"}</small></button>`
+          : `<div class="photo-card file-card"><span class="folder-icon">${item.mimeType.startsWith("video/") ? "🎞️" : "📄"}</span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.mimeType)}</small></div>`).join("");
+      const back = browserPage.parentDriveId ? `<a href="?parent=${encodeURIComponent(browserPage.parentDriveId)}">← Parent folder</a>` : `<a href="/drive/folders">← Photo folders</a>`;
+      const previous = pageNumber > 1 ? `<a href="?parent=${encodeURIComponent(parent)}&page=${pageNumber - 1}">Previous</a>` : "";
+      const following = pageNumber * pageSize < browserPage.total ? `<a href="?parent=${encodeURIComponent(parent)}&page=${pageNumber + 1}">Next</a>` : "";
+      return response.type("html").send(page(`<div class="browser-head"><div><p class="eyebrow">Photo browser</p><h1>${escapeHtml(browserPage.parentName)}</h1></div><p>${back}</p></div><p>${browserPage.total} items</p><div class="photo-grid">${cards || "<p>This folder is empty.</p>"}</div><p class="pager">${previous} ${following}</p><dialog id="photo-viewer"><button class="viewer-close" aria-label="Close">×</button><img alt=""><p></p><button class="viewer-prev" aria-label="Previous photo">←</button><button class="viewer-next" aria-label="Next photo">→</button></dialog>${viewerScript()}`));
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/drive/folders/:folderId/files/:fileId/:variant", requireMember, async (request, response, next) => {
+    try {
+      const folderId = String(request.params.folderId), fileId = String(request.params.fileId), variant = String(request.params.variant);
+      if (variant !== "thumbnail" && variant !== "content") return response.status(404).end();
+      if (!await data!.canAccessIndexedDriveFile(request.session.userId!, folderId, fileId)) return response.status(404).end();
+      const accessToken = await getDriveAccessToken(request.session.userId!);
+      if (!accessToken || !driveAuthorization) return response.status(409).json({ error: "drive_connection_required" });
+      const driveResponse = await driveAuthorization.getFileResponse(accessToken, fileId, variant === "thumbnail");
+      if (!driveResponse.ok || !driveResponse.body) return response.status(driveResponse.status).end();
+      response.setHeader("content-type", driveResponse.headers.get("content-type") ?? "application/octet-stream");
+      response.setHeader("cache-control", "private, max-age=300");
+      Readable.fromWeb(driveResponse.body as any).pipe(response);
     } catch (error) { next(error); }
   });
 
@@ -317,7 +355,11 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
 }
 
 function page(content: string) {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Family Photo Archive</title><style>body{font:18px system-ui;max-width:48rem;margin:12vh auto;padding:0 1.5rem;color:#29251f;background:#f3eee5}main{background:#fff;padding:clamp(2rem,6vw,4rem);border-radius:1.2rem;box-shadow:0 18px 50px #352d2018}h1{font:700 clamp(2.5rem,7vw,4.6rem)/1.05 Georgia,serif;margin:.25rem 0 1.5rem;max-width:12ch}p,li{line-height:1.6}.eyebrow{color:#765b38;font-size:.8rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}.muted{color:#6d655b;font-size:.88rem;margin-top:1.5rem}.button,button{display:inline-block;border:0;border-radius:.6rem;padding:.85rem 1.15rem;background:#493a29;color:white;font:600 .95rem system-ui;text-decoration:none;cursor:pointer}.secondary{background:#e9e0d4;color:#493a29}form{display:flex;gap:.75rem;flex-wrap:wrap;align-items:end;margin:2rem 0}form.inline{display:inline;margin-left:.6rem}form.inline button{padding:.45rem .7rem}label{display:grid;gap:.35rem;font-size:.85rem;font-weight:700}input,select{font:inherit;padding:.65rem;border:1px solid #b9aa96;border-radius:.4rem}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.7rem;border-bottom:1px solid #e9e0d4;font-size:.9rem}</style></head><body><main>${content}</main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Family Photo Archive</title><style>body{font:18px system-ui;max-width:80rem;margin:6vh auto;padding:0 1.5rem;color:#29251f;background:#f3eee5}main{background:#fff;padding:clamp(2rem,6vw,4rem);border-radius:1.2rem;box-shadow:0 18px 50px #352d2018}h1{font:700 clamp(2.5rem,7vw,4.6rem)/1.05 Georgia,serif;margin:.25rem 0 1.5rem;max-width:12ch}p,li{line-height:1.6}.eyebrow{color:#765b38;font-size:.8rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}.muted{color:#6d655b;font-size:.88rem;margin-top:1.5rem}.button,button{display:inline-block;border:0;border-radius:.6rem;padding:.85rem 1.15rem;background:#493a29;color:white;font:600 .95rem system-ui;text-decoration:none;cursor:pointer}.secondary{background:#e9e0d4;color:#493a29}form{display:flex;gap:.75rem;flex-wrap:wrap;align-items:end;margin:2rem 0}form.inline{display:inline;margin-left:.6rem}form.inline button{padding:.45rem .7rem}label{display:grid;gap:.35rem;font-size:.85rem;font-weight:700}input,select{font:inherit;padding:.65rem;border:1px solid #b9aa96;border-radius:.4rem}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.7rem;border-bottom:1px solid #e9e0d4;font-size:.9rem}.browser-head{display:flex;justify-content:space-between;align-items:end;gap:1rem}.photo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:1rem}.photo-card{box-sizing:border-box;min-height:170px;width:100%;padding:.65rem;background:#f3eee5;color:#29251f;text-align:left;text-decoration:none;display:flex;flex-direction:column;gap:.45rem;border-radius:.7rem;overflow:hidden}.photo-card img{width:100%;height:130px;object-fit:cover;border-radius:.35rem;background:#ddd}.photo-card span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.photo-card small{color:#6d655b}.folder-card{justify-content:center;align-items:center;text-align:center}.folder-icon{font-size:3rem}.pager{display:flex;justify-content:space-between}dialog{border:0;border-radius:1rem;background:#171512;color:white;max-width:min(92vw,1100px);padding:1rem}dialog::backdrop{background:#000c}dialog img{display:block;max-width:calc(92vw - 2rem);max-height:78vh;margin:auto}.viewer-close,.viewer-prev,.viewer-next{position:absolute;background:#fff;color:#171512;padding:.5rem .75rem}.viewer-close{right:1rem;top:1rem}.viewer-prev{left:1rem;top:50%}.viewer-next{right:1rem;top:50%}@media(max-width:600px){main{padding:1.2rem}.photo-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.browser-head{display:block}}</style></head><body><main>${content}</main></body></html>`;
+}
+
+function viewerScript() {
+  return `<script>const cards=[...document.querySelectorAll(".image-card")],viewer=document.getElementById("photo-viewer"),image=viewer.querySelector("img"),caption=viewer.querySelector("p");let current=0;function show(index){current=(index+cards.length)%cards.length;image.src=cards[current].dataset.full;caption.textContent=cards[current].dataset.name;viewer.showModal()}cards.forEach((card,index)=>card.addEventListener("click",()=>show(index)));viewer.querySelector(".viewer-close").addEventListener("click",()=>viewer.close());viewer.querySelector(".viewer-prev").addEventListener("click",()=>show(current-1));viewer.querySelector(".viewer-next").addEventListener("click",()=>show(current+1));viewer.addEventListener("click",event=>{if(event.target===viewer)viewer.close()});document.addEventListener("keydown",event=>{if(!viewer.open)return;if(event.key==="ArrowLeft")show(current-1);if(event.key==="ArrowRight")show(current+1)});</script>`;
 }
 
 function escapeHtml(value: string) {
