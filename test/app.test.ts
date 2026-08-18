@@ -265,6 +265,8 @@ test("members can browse indexed folders and open image cards", () => {
     assert.match(html, /Hide marks/);
     assert.match(html, /minmax\(460px,2fr\)/);
     assert.match(html, /flexWrap="nowrap"/);
+    assert.match(html, /Mark another subject/);
+    assert.match(html, /subject-list\{max-height:15rem;overflow-y:auto/);
     for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new Function(script[1] ?? ""));
   }, { data, identity });
 });
