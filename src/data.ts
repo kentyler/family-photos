@@ -58,6 +58,7 @@ export interface DataStore {
   attachDriveFolder(userId: string, driveFolderId: string, name: string): Promise<AttachedFolder>;
   listAttachedFolders(userId: string): Promise<AttachedFolder[]>;
   getAttachedFolder(userId: string, folderId: string): Promise<AttachedFolder | null>;
+  detachDriveFolder(userId: string, folderId: string): Promise<boolean>;
   replaceIndexedDriveItems(userId: string, folderId: string, items: IndexedDriveItem[], folders?: IndexedDriveFolder[]): Promise<number>;
   countIndexedDriveItems(userId: string, folderId: string): Promise<number>;
   countLegacyDriveMatches(userId: string, folderId: string): Promise<number>;
@@ -219,6 +220,11 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       `, [folderId, userId]);
       const row = result.rows[0];
       return row ? { id: row.id, driveFolderId: row.drive_folder_id, name: row.name, attachedAt: row.attached_at.toISOString() } : null;
+    },
+
+    async detachDriveFolder(userId, folderId) {
+      const result = await pool.query("DELETE FROM attached_drive_folders WHERE id = $1 AND user_id = $2", [folderId, userId]);
+      return Boolean(result.rowCount);
     },
 
     async replaceIndexedDriveItems(userId, folderId, items, folders = []) {

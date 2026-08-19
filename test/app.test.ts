@@ -33,6 +33,7 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     },
     async listAttachedFolders() { return folders; },
     async getAttachedFolder(_userId, folderId) { return folders.find((folder) => folder.id === folderId) ?? null; },
+    async detachDriveFolder(_userId, folderId) { const index = folders.findIndex((folder) => folder.id === folderId); if (index < 0) return false; folders.splice(index, 1); return true; },
     async replaceIndexedDriveItems(_userId, _folderId, items) { return items.length; },
     async countIndexedDriveItems() { return 0; },
     async countLegacyDriveMatches() { return 0; },
@@ -110,6 +111,31 @@ test("current user is private without a session", () => withServer(async (origin
   const response = await fetch(`${origin}/api/me`);
   assert.equal(response.status, 401);
 }));
+
+test("the public welcome screen links to a tutorial that does not require authentication", () => withServer(async (origin) => {
+  const welcome = await fetch(`${origin}/`);
+  assert.equal(welcome.status, 200);
+  assert.match(await welcome.text(), /href="\/tutorial">Take the tutorial/);
+
+  const tutorial = await fetch(`${origin}/tutorial`);
+  assert.equal(tutorial.status, 200);
+  const html = await tutorial.text();
+  assert.match(html, /Step 1 of 6/);
+  assert.match(html, /Continue with Google/);
+  assert.match(html, /Connect Google Drive/);
+  assert.match(html, /Choose photo folders/);
+  assert.match(html, /Keep the story with the photograph/);
+  for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new Function(script[1] ?? ""));
+}));
+
+test("signed-in members can launch the tutorial from the archive screen", () => withServer(async (origin) => {
+  const sessionCookie = await signIn(origin);
+  const archive = await fetch(`${origin}/app`, { headers: { cookie: sessionCookie } });
+  assert.equal(archive.status, 200);
+  const html = await archive.text();
+  assert.match(html, /href="\/tutorial">Tutorial<\/a>/);
+  assert.match(html, /href="\/tutorial">Take the tutorial<\/a>/);
+}, { data: fakeData(), identity }));
 
 test("Google login persists the user and establishes a fresh session", () => withServer(async (origin) => {
   const sessionCookie = await signIn(origin);
@@ -220,6 +246,28 @@ test("a connected member can attach a Picker-selected Drive folder", () => {
     assert.equal(attached.status, 201);
     assert.deepEqual(await attached.json(), { id: "folder-1", driveFolderId: "drive-folder-1", name: "Grandma's Photos", attachedAt: "2026-08-17T00:00:00.000Z" });
   }, { data, identity, driveAuthorization });
+});
+
+test("returning members see saved folders and can remove them from the archive", () => {
+  const data = fakeData();
+  data.hasDriveConnection = async () => true;
+  return withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    await data.attachDriveFolder("user-1", "drive-folder-1", "Grandma's Photos");
+
+    const archive = await fetch(`${origin}/app`, { headers: { cookie: sessionCookie } });
+    const archiveHtml = await archive.text();
+    assert.match(archiveHtml, /Your saved photo folders are ready below/);
+    assert.match(archiveHtml, /Grandma&#0?39;s Photos/);
+    assert.match(archiveHtml, /Add or remove folders/);
+
+    const folderPage = await fetch(`${origin}/drive/folders`, { headers: { cookie: sessionCookie } });
+    assert.match(await folderPage.text(), /Remove folder/);
+    const removed = await fetch(`${origin}/api/drive/folders/folder-1/remove`, { method: "POST", redirect: "manual", headers: { cookie: sessionCookie } });
+    assert.equal(removed.status, 303);
+    assert.equal(removed.headers.get("location"), "/drive/folders?removed=1");
+    assert.deepEqual(await data.listAttachedFolders("user-1"), []);
+  }, { data, identity });
 });
 
 test("members can review reconciliation samples for their attached folder", () => {
