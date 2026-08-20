@@ -1,6 +1,6 @@
 # Family Photo Archive — Living Project Plan
 
-Last updated: 2026-08-18
+Last updated: 2026-08-20
 
 ## Purpose
 
@@ -128,6 +128,8 @@ Exit criteria: relatives can enrich the same photograph without overwriting one 
 
 Current status: **in progress**. The lightbox is now a responsive two-pane photo workspace with the image and its single caption beside editable caption and shared story/notes fields. The desktop layout gives the identification pane roughly 40% of the width, anchors the photograph toward the left, and keeps caption, notes, and identification controls in one vertically scrolling, non-wrapping column. Every indexed image receives its filename as a persisted default caption; editing it updates that same caption record. Thumbnail cards show this caption instead of the underlying filename and reconciliation label, reveal the full caption on hover, and update immediately after an edit. Members can repeatedly draw normalized rectangular regions around any number of people or things, review them in a separately scrollable list, label things, link people through an alias to one canonical person, remove incorrect regions, and hide all marks for an unobstructed view. The reusable editor shows only the fields relevant to Person or Thing. Legacy people and aliases seed the new canonical tables. Text and regions are stored against the attached folder and stable Google Drive file ID and survive indexing rescans and Drive renames. Comments, full edit history, richer person management, and genealogy navigation remain future work.
 
+An append-only activity stream now records each successful member login and which member views, tags, removes a tag from, or updates the caption/notes on a photograph. Administrators can review the 200 most recent events; the underlying indexes also support future per-user and per-photo history views. This is deliberately activity history rather than analytics: it stores the member, action, photo identity, time, and small action-specific details, but no browser fingerprint or IP address.
+
 ### Step 5 — Family-tree integration
 
 Goal: connect photo identifications to canonical family identities.
@@ -156,7 +158,7 @@ Scope:
 
 Exit criteria: users can repeatedly move between photos and people without encountering disconnected screens or losing their place.
 
-Current status: **in progress**. A person-centered Family Explorer now searches canonical people by any alias. A single or exact alias match opens automatically, multiple matches are presented as explicit “View” choices, and detail-loading failures are visible instead of silent. Its right pane shows the focused person's aliases, parents, marriages, and children, and relatives can be selected to change focus. Its left pane lists hosted thumbnails for both newly marked regions and reconciled legacy photo-person identifications. Photo links return to the existing photo workspace and automatically open the selected image; the browser back action preserves the focused person. Person identifications in the photo workspace link directly to the explorer with that canonical person focused. A consistent page header links to the archive, Drive folders, and People & family throughout the application. Editing relationships and richer tree visualization remain future work.
+Current status: **in progress**. A person-centered Family Explorer now searches canonical people by any alias. A single or exact alias match opens automatically, multiple matches are presented as explicit “View” choices, and detail-loading failures are visible instead of silent. Its right pane shows the focused person's aliases, parents, marriages, and children; relatives can be selected to change focus, and parents, marriages, or children can be added by linking an existing canonical person or creating a new one. Its left pane lists hosted thumbnails for both newly marked regions and reconciled legacy photo-person identifications. A separate family-tree view starts with the focused person and lazily expands collapsible parent, marriage, and child branches, avoiding an expensive whole-archive tree query. Every tree person links back to both the individual genealogy pane and that person's photo collection. Photo links return to the existing photo workspace and automatically open the selected image; the browser back action preserves the focused person. Person identifications in the photo workspace link directly to the explorer with that canonical person focused. A consistent page header links to the archive, Drive folders, and People & family throughout the application. A graphical pedigree layout remains future work.
 
 Marriage and child editors now let members link an existing canonical person or explicitly create a new person, with an optional marriage date. Preserved legacy marriages and parent-child links are normalized into the same application-owned relationship table used by new entries, rather than being maintained as a separate live data source. Marriage links resolve bidirectionally, and parent-child links appear from both the parent's and child's focused views.
 
@@ -199,6 +201,7 @@ These may be useful later, but they must build on the photo-person-family-tree l
 | 2026-08-17 | Store indexed Drive folders as first-class records rather than reconstructing navigation from photo paths. | Stable Drive IDs and explicit parent relationships handle duplicate names and future moves or renames without relying on a fragile path-derived hierarchy. |
 | 2026-08-18 | Use a two-pane photo workspace first, while reserving a later third pane for people, things, and genealogy context. | Caption and story entry can become useful immediately; rectangular subject regions need a distinct model and should support objects as well as faces. |
 | 2026-08-18 | Key editable photo records by attached folder and Google Drive file ID rather than an ephemeral scan row. | Drive IDs survive ordinary rename and move operations, and scan replacement must not erase family-contributed text. |
+| 2026-08-20 | Keep an append-only member activity stream for logins and photo views, tags, and notes updates. | The archive should retain provenance and allow administrators to understand participation without collecting invasive browser or network identifiers. |
 | 2026-08-18 | Normalize preserved and newly entered family relationships into one application-owned relationship table. | One authoritative model prevents legacy and new marriages or parent-child links from diverging while retaining source provenance. |
 
 ## Working agreement for maintaining this file

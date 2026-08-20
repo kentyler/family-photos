@@ -53,8 +53,12 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async createPhotoSubjectRegion(_userId, _folderId, _fileId, subjectType, label, personId, aliasId, x, y, width, height) { return { id: "region-1", subjectType, personId, aliasId, label: label ?? "Grandma Claire", x, y, width, height, createdBy: "Ken", createdAt: "2026-08-18T00:00:00.000Z" }; },
     async deletePhotoSubjectRegion() { return true; },
     async searchPeople(_userId, query) { return query ? [{ id: "person-1", primaryName: "Claire Atwood", aliases: ["Claire Atwood", "Grandma Claire"] }] : []; },
-    async getPersonExplorer(_userId, personId) { return personId === "person-1" ? { id: personId, primaryName: "Claire Atwood", aliases: ["Claire Atwood", "Grandma Claire"], parents: [], spouses: [], children: [], photos: [] } : null; },
+    async getPersonExplorer(_userId, personId) { return personId === "person-1" ? { id: personId, primaryName: "Claire Atwood", aliases: ["Claire Atwood", "Grandma Claire"], parents: [], spouses: [], children: [], stories: [], photos: [] } : null; },
+    async listFamilyStories() { return [{ id: "story-existing", title: "Lake days", body: "A family memory.", people: [{ id: "person-1", primaryName: "Claire Atwood" }], createdAt: "2026-08-18T00:00:00.000Z", createdBy: "Ken" }]; },
+    async createFamilyStory(_userId, title, body, personIds) { return { id: "story-1", title, body, people: personIds.map((id) => ({ id, primaryName: "Claire Atwood" })), createdAt: "2026-08-19T00:00:00.000Z", createdBy: "Ken" }; },
     async addFamilyRelationship() { return true; },
+    async recordActivity() { return true; },
+    async listRecentActivity() { return []; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -144,6 +148,19 @@ test("Google login persists the user and establishes a fresh session", () => wit
   assert.deepEqual(await response.json(), { id: "user-1", email: "ken@example.com", displayName: "Ken", avatarUrl: null });
 }, { data: fakeData(), identity }));
 
+test("successful logins and photo interactions are recorded", () => {
+  const data = fakeData();
+  const events: Array<{ eventType: string; folderId?: string; fileId?: string }> = [];
+  data.recordActivity = async (_userId, eventType, folderId, fileId) => { events.push({ eventType, folderId, fileId }); return true; };
+  return withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    const headers = { cookie: sessionCookie };
+    assert.equal((await fetch(`${origin}/api/drive/folders/folder-1/photos/photo-1/view`, { method: "POST", headers })).status, 204);
+    assert.equal((await fetch(`${origin}/api/drive/folders/folder-1/photos/photo-1/text`, { method: "PUT", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ caption: "At the lake", notes: "Summer 1952" }) })).status, 200);
+    assert.deepEqual(events.map((event) => event.eventType), ["login", "photo_viewed", "photo_notes_updated"]);
+  }, { data, identity });
+});
+
 test("verified Google identities not on the membership list are denied", () => withServer(async (origin) => {
   const start = await fetch(`${origin}/auth/google`, { redirect: "manual" });
   const callback = await fetch(`${origin}/auth/google/callback?code=code-1&state=state-1`, {
@@ -187,6 +204,17 @@ test("ordinary members cannot manage the application membership list", () => wit
   const response = await fetch(`${origin}/api/admin/members`, { headers: { cookie: sessionCookie } });
   assert.equal(response.status, 403);
 }, { data: fakeData("member"), identity }));
+
+test("only administrators can review recent activity", async () => {
+  await withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    assert.equal((await fetch(`${origin}/api/admin/activity`, { headers: { cookie: sessionCookie } })).status, 200);
+  }, { data: fakeData(), identity });
+  await withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    assert.equal((await fetch(`${origin}/api/admin/activity`, { headers: { cookie: sessionCookie } })).status, 403);
+  }, { data: fakeData("member"), identity });
+});
 
 test("Drive authorization is separate and stores an encrypted refresh token", () => {
   const data = fakeData();
@@ -308,7 +336,7 @@ test("members can browse indexed folders and open image cards", () => {
     assert.doesNotMatch(html, /Legacy details linked/);
     assert.match(html, /photo-viewer/);
     assert.match(html, /About this photograph/);
-    assert.match(html, /Story or notes/);
+    assert.match(html, /Notes/);
     assert.match(html, /data-id="photo-1"/);
     assert.match(html, /viewer-caption/);
     assert.match(html, /Mark a subject/);
@@ -385,5 +413,52 @@ test("members can search people and open the genealogy explorer", () => {
     assert.match(html, /View →/);
     assert.match(html, /data\.people\.length===1/);
     assert.match(html, /That person could not be opened/);
+  }, { data, identity });
+});
+
+test("the family explorer can add a parent with the correct relationship direction", () => {
+  const data = fakeData();
+  let relationship: { parentId: string; childId: string; type: string } | undefined;
+  data.addFamilyRelationship = async (_userId, parentId, childId, type) => { relationship = { parentId, childId, type }; return true; };
+  return withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    const explorer = await fetch(`${origin}/people`, { headers: { cookie: sessionCookie } });
+    assert.match(await explorer.text(), /relationshipEditor\("\.parents","parent","Add parent"\)/);
+    const saved = await fetch(`${origin}/api/people/person-1/relationships`, {
+      method: "POST",
+      headers: { cookie: sessionCookie, "content-type": "application/json" },
+      body: JSON.stringify({ relationshipType: "parent", relatedPersonId: "person-2" }),
+    });
+    assert.equal(saved.status, 201);
+    assert.deepEqual(relationship, { parentId: "person-2", childId: "person-1", type: "parent" });
+  }, { data, identity });
+});
+
+test("members can open a collapsible family tree linked to genealogy and photos", () => withServer(async (origin) => {
+  const sessionCookie = await signIn(origin);
+  const response = await fetch(`${origin}/tree?person=person-1`, { headers: { cookie: sessionCookie } });
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Branches load as you expand them/);
+  assert.match(html, /Individual genealogy form/);
+  assert.match(html, /Photos/);
+  assert.match(html, /branch\("Parents"/);
+  assert.match(html, /branch\("Marriages"/);
+  assert.match(html, /branch\("Children"/);
+  for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new Function(script[1] ?? ""));
+}, { data: fakeData(), identity }));
+
+test("members can create stories linked to genealogy people", () => {
+  const data = fakeData();
+  return withServer(async (origin) => {
+    const sessionCookie = await signIn(origin);
+    const page = await fetch(`${origin}/stories`, { headers: { cookie: sessionCookie } });
+    const html = await page.text();
+    assert.match(html, /Add a story/);
+    assert.match(html, /Link people/);
+    assert.match(html, /href="\/people\?person=/);
+    const created = await fetch(`${origin}/api/stories`, { method: "POST", headers: { cookie: sessionCookie, "content-type": "application/json" }, body: JSON.stringify({ title: "The lake picnic", body: "Claire always brought the red blanket.", personIds: ["person-1"] }) });
+    assert.equal(created.status, 201);
+    assert.deepEqual(await created.json(), { id: "story-1", title: "The lake picnic", body: "Claire always brought the red blanket.", people: [{ id: "person-1", primaryName: "Claire Atwood" }], createdAt: "2026-08-19T00:00:00.000Z", createdBy: "Ken" });
   }, { data, identity });
 });

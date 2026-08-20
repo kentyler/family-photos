@@ -43,7 +43,10 @@ export type PhotoText = { caption: string; notes: string; updatedAt: string | nu
 export type PersonAliasChoice = { personId: string; aliasId: string; alias: string; isPrimary: boolean };
 export type PhotoSubjectRegion = { id: string; subjectType: "person" | "thing"; personId: string | null; aliasId: string | null; label: string; x: number; y: number; width: number; height: number; createdBy: string; createdAt: string };
 export type PersonSearchResult = { id: string; primaryName: string; aliases: string[]; relationshipDate?: string | null };
-export type PersonExplorer = { id: string; primaryName: string; aliases: string[]; parents: PersonSearchResult[]; spouses: PersonSearchResult[]; children: PersonSearchResult[]; photos: Array<{ folderId: string; driveFileId: string; parentDriveId: string; name: string; caption: string }> };
+export type FamilyStory = { id: string; title: string; body: string; people: Array<{ id: string; primaryName: string }>; createdAt: string; createdBy: string | null };
+export type ActivityEventType = "login" | "photo_viewed" | "photo_tagged" | "photo_untagged" | "photo_notes_updated";
+export type ActivityEvent = { id: string; eventType: ActivityEventType; userId: string; userName: string; userEmail: string; folderId: string | null; driveFileId: string | null; photoName: string | null; details: Record<string, unknown>; occurredAt: string };
+export type PersonExplorer = { id: string; primaryName: string; aliases: string[]; parents: PersonSearchResult[]; spouses: PersonSearchResult[]; children: PersonSearchResult[]; stories: FamilyStory[]; photos: Array<{ folderId: string; driveFileId: string; parentDriveId: string; name: string; caption: string }> };
 
 export interface DataStore {
   isReady(): Promise<boolean>;
@@ -79,7 +82,11 @@ export interface DataStore {
   deletePhotoSubjectRegion(userId: string, folderId: string, driveFileId: string, regionId: string): Promise<boolean>;
   searchPeople(userId: string, query: string, limit: number): Promise<PersonSearchResult[]>;
   getPersonExplorer(userId: string, personId: string): Promise<PersonExplorer | null>;
+  listFamilyStories(userId: string): Promise<FamilyStory[]>;
+  createFamilyStory(userId: string, title: string, body: string, personIds: string[]): Promise<FamilyStory | null>;
   addFamilyRelationship(userId: string, personId: string, relatedPersonId: string, relationshipType: "spouse" | "parent", dateText: string | null): Promise<boolean>;
+  recordActivity(userId: string, eventType: ActivityEventType, folderId?: string, driveFileId?: string, details?: Record<string, unknown>): Promise<boolean>;
+  listRecentActivity(limit: number): Promise<ActivityEvent[]>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -555,8 +562,8 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       if (!person) return null;
       const applicationRelationships = await pool.query(`
         WITH related AS (
-          SELECT CASE WHEN r.relationship_type='spouse' AND r.related_person_id=$1 THEN r.person_id ELSE r.related_person_id END AS related_id,
-                 CASE WHEN r.relationship_type='spouse' THEN 'spouse' WHEN r.person_id=$1 THEN 'parent' ELSE 'child' END AS type,
+          SELECT CASE WHEN r.related_person_id=$1 THEN r.person_id ELSE r.related_person_id END AS related_id,
+                 CASE WHEN r.relationship_type='spouse' THEN 'spouse' WHEN r.person_id=$1 THEN 'child' ELSE 'parent' END AS type,
                  r.date_text AS relationship_date
           FROM family_relationships r
           WHERE r.person_id=$1 OR r.related_person_id=$1
@@ -584,7 +591,55 @@ export function createPostgresDataStore(pool: Pool): DataStore {
         WHERE f.user_id=$2 ORDER BY lower(COALESCE(pr.caption,i.name)), i.drive_file_id
       `, [personId, userId]);
       const related = applicationRelationships.rows.map(mapPersonSearchResult);
-      return { id: person.id, primaryName: person.primary_name, aliases: person.aliases, parents: related.filter((row: any) => row.type === "child"), spouses: related.filter((row: any) => row.type === "spouse"), children: related.filter((row: any) => row.type === "parent" || row.type === "father" || row.type === "mother"), photos: photos.rows.map((row) => ({ folderId: row.folder_id, driveFileId: row.drive_file_id, parentDriveId: row.parent_drive_id, name: row.name, caption: row.caption })) };
+      const stories = await pool.query(`
+        SELECT s.id, s.title, s.body, s.created_at, u.display_name AS created_by,
+               json_agg(json_build_object('id', linked.id, 'primaryName', linked.primary_name) ORDER BY lower(linked.primary_name)) AS people
+        FROM family_stories s
+        JOIN family_story_people focused ON focused.story_id=s.id AND focused.person_id=$1
+        JOIN family_story_people sp ON sp.story_id=s.id
+        JOIN LATERAL (
+          SELECT p.id, COALESCE(max(a.alias) FILTER (WHERE a.is_primary), min(a.alias)) AS primary_name
+          FROM family_people p JOIN family_person_aliases a ON a.person_id=p.id WHERE p.id=sp.person_id GROUP BY p.id
+        ) linked ON true
+        LEFT JOIN users u ON u.id=s.created_by
+        GROUP BY s.id,u.display_name ORDER BY s.created_at DESC,s.id
+      `, [personId]);
+      return { id: person.id, primaryName: person.primary_name, aliases: person.aliases, parents: related.filter((row: any) => row.type === "parent"), spouses: related.filter((row: any) => row.type === "spouse"), children: related.filter((row: any) => row.type === "child"), stories: stories.rows.map((row) => ({ id: row.id, title: row.title, body: row.body, people: row.people, createdAt: new Date(row.created_at).toISOString(), createdBy: row.created_by ?? null })), photos: photos.rows.map((row) => ({ folderId: row.folder_id, driveFileId: row.drive_file_id, parentDriveId: row.parent_drive_id, name: row.name, caption: row.caption })) };
+    },
+
+    async createFamilyStory(userId, title, body, personIds) {
+      if (!await this.getApplicationRole(userId) || !personIds.length) return null;
+      const uniquePersonIds = [...new Set(personIds)];
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const people = await client.query("SELECT id FROM family_people WHERE id=ANY($1::uuid[])", [uniquePersonIds]);
+        if (people.rowCount !== uniquePersonIds.length) { await client.query("ROLLBACK"); return null; }
+        const story = await client.query("INSERT INTO family_stories (title,body,created_by) VALUES ($1,$2,$3) RETURNING id,created_at", [title, body, userId]);
+        await client.query("INSERT INTO family_story_people (story_id,person_id) SELECT $1,unnest($2::uuid[])", [story.rows[0].id, uniquePersonIds]);
+        await client.query("COMMIT");
+        const names = await pool.query(`SELECT p.id, COALESCE(max(a.alias) FILTER (WHERE a.is_primary),min(a.alias)) AS primary_name FROM family_people p JOIN family_person_aliases a ON a.person_id=p.id WHERE p.id=ANY($1::uuid[]) GROUP BY p.id ORDER BY lower(COALESCE(max(a.alias) FILTER (WHERE a.is_primary),min(a.alias)))`, [uniquePersonIds]);
+        const user = await this.getUser(userId);
+        return { id: story.rows[0].id, title, body, people: names.rows.map((row) => ({ id: row.id, primaryName: row.primary_name })), createdAt: new Date(story.rows[0].created_at).toISOString(), createdBy: user?.displayName ?? null };
+      } catch (error) { await client.query("ROLLBACK"); throw error; }
+      finally { client.release(); }
+    },
+
+    async listFamilyStories(userId) {
+      if (!await this.getApplicationRole(userId)) return [];
+      const result = await pool.query(`
+        SELECT s.id,s.title,s.body,s.created_at,u.display_name AS created_by,
+               json_agg(json_build_object('id', linked.id, 'primaryName', linked.primary_name) ORDER BY lower(linked.primary_name)) AS people
+        FROM family_stories s
+        JOIN family_story_people sp ON sp.story_id=s.id
+        JOIN LATERAL (
+          SELECT p.id,COALESCE(max(a.alias) FILTER (WHERE a.is_primary),min(a.alias)) AS primary_name
+          FROM family_people p JOIN family_person_aliases a ON a.person_id=p.id WHERE p.id=sp.person_id GROUP BY p.id
+        ) linked ON true
+        LEFT JOIN users u ON u.id=s.created_by
+        GROUP BY s.id,u.display_name ORDER BY s.created_at DESC,s.id
+      `);
+      return result.rows.map((row) => ({ id: row.id, title: row.title, body: row.body, people: row.people, createdAt: new Date(row.created_at).toISOString(), createdBy: row.created_by ?? null }));
     },
 
     async addFamilyRelationship(userId, personId, relatedPersonId, relationshipType, dateText) {
@@ -595,6 +650,41 @@ export function createPostgresDataStore(pool: Pool): DataStore {
         ON CONFLICT DO NOTHING RETURNING id
       `, [relationshipType, personId, relatedPersonId, dateText, userId]);
       return Boolean(result.rowCount) || Boolean((await pool.query(`SELECT 1 FROM family_relationships WHERE relationship_type=$1 AND ((person_id=$2 AND related_person_id=$3) OR ($1='spouse' AND person_id=$3 AND related_person_id=$2))`, [relationshipType, personId, relatedPersonId])).rowCount);
+    },
+
+    async recordActivity(userId, eventType, folderId, driveFileId, details = {}) {
+      if (eventType === "login") {
+        const result = await pool.query(`
+          INSERT INTO activity_events (user_id,event_type,details)
+          SELECT $1,$2,$3::jsonb WHERE EXISTS (SELECT 1 FROM application_memberships WHERE user_id=$1)
+          RETURNING id
+        `, [userId, eventType, JSON.stringify(details)]);
+        return Boolean(result.rowCount);
+      }
+      if (!folderId || !driveFileId) return false;
+      const result = await pool.query(`
+        INSERT INTO activity_events (user_id,event_type,attached_folder_id,drive_file_id,details)
+        SELECT $1,$2,$3,$4,$5::jsonb
+        WHERE EXISTS (
+          SELECT 1 FROM attached_drive_folders f
+          JOIN indexed_drive_items i ON i.attached_folder_id=f.id AND i.drive_file_id=$4
+          WHERE f.id=$3 AND f.user_id=$1
+        )
+        RETURNING id
+      `, [userId, eventType, folderId, driveFileId, JSON.stringify(details)]);
+      return Boolean(result.rowCount);
+    },
+
+    async listRecentActivity(limit) {
+      const result = await pool.query(`
+        SELECT e.id,e.event_type,e.user_id,u.display_name,u.email,e.attached_folder_id,e.drive_file_id,
+               i.name AS photo_name,e.details,e.occurred_at
+        FROM activity_events e
+        JOIN users u ON u.id=e.user_id
+        LEFT JOIN indexed_drive_items i ON i.attached_folder_id=e.attached_folder_id AND i.drive_file_id=e.drive_file_id
+        ORDER BY e.occurred_at DESC,e.id DESC LIMIT $1
+      `, [Math.max(1, Math.min(limit, 500))]);
+      return result.rows.map((row) => ({ id: row.id, eventType: row.event_type, userId: row.user_id, userName: row.display_name, userEmail: row.email, folderId: row.attached_folder_id ?? null, driveFileId: row.drive_file_id ?? null, photoName: row.photo_name ?? null, details: row.details ?? {}, occurredAt: new Date(row.occurred_at).toISOString() }));
     },
 
     async listArchives(userId) {
