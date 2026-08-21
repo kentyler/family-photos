@@ -202,14 +202,14 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
   });
 
   let scanQueue = Promise.resolve();
-  const enqueueScan = (jobId: string, userId: string, folder: Awaited<ReturnType<DataStore["getAttachedFolder"]>>) => {
+  const enqueueScan = (jobId: string, userId: string, folder: Awaited<ReturnType<DataStore["getAttachedFolder"]>>, target?: { driveFolderId: string; relativePath: string }) => {
     scanQueue = scanQueue.then(async () => {
       if (!folder) return;
       try {
         await data!.updateDriveScanJob(jobId, { status: "running" });
         const accessToken = await getDriveAccessToken(userId);
         if (!accessToken || !driveAuthorization) throw new Error("Google Drive connection must be renewed");
-        const pending = [{ driveId: folder.driveFolderId, relativePath: "" }];
+        const pending = [{ driveId: target?.driveFolderId ?? folder.driveFolderId, relativePath: target?.relativePath ?? "" }];
         const visited = new Set<string>();
         const indexed = [];
         const indexedFolders: IndexedDriveFolder[] = [];
@@ -227,8 +227,9 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
           }
           if (visited.size % 25 === 0) await data!.updateDriveScanJob(jobId, { foldersScanned: visited.size, itemsDiscovered: indexed.length });
         }
-        await data!.replaceIndexedDriveItems(userId, folder.id, indexed, indexedFolders);
-        const result = await data!.reconcileLegacyDriveItems(userId, folder.id);
+        if (target) await data!.replaceIndexedDriveSubtree(userId, folder.id, target.driveFolderId, indexed, indexedFolders);
+        else await data!.replaceIndexedDriveItems(userId, folder.id, indexed, indexedFolders);
+        const result = await data!.reconcileLegacyDriveItems(userId, folder.id, target?.relativePath);
         await data!.updateDriveScanJob(jobId, { status: "completed", foldersScanned: visited.size, itemsDiscovered: indexed.length, matchedItems: result.matched, unmatchedItems: result.unmatched, ambiguousItems: result.ambiguous });
       } catch (error) {
         console.error("Drive scan failed", error);
@@ -250,6 +251,21 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
       return request.is("application/x-www-form-urlencoded")
         ? response.redirect(303, "/drive/folders?scan=queued")
         : response.status(202).json({ job });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/drive/folders/:folderId/rescan-subtree", requireMember, async (request, response, next) => {
+    const folderId = String(request.params.folderId), driveFolderId = typeof request.body.driveFolderId === "string" ? request.body.driveFolderId.trim() : "";
+    if (!driveFolderId || driveFolderId.length > 256) return response.status(400).json({ error: "valid_drive_folder_id_required" });
+    try {
+      const folder = await data!.getAttachedFolder(request.session.userId!, folderId);
+      if (!folder) return response.status(404).json({ error: "folder_not_found" });
+      const target = await data!.getIndexedDriveFolder(request.session.userId!, folder.id, driveFolderId);
+      if (!target) return response.status(404).json({ error: "indexed_folder_not_found" });
+      const job = await data!.createDriveScanJob(request.session.userId!, folder.id);
+      enqueueScan(job.id, request.session.userId!, folder, target);
+      const returnTo = `/drive/folders/${encodeURIComponent(folder.id)}/browse?parent=${encodeURIComponent(target.driveFolderId)}&scan=queued`;
+      return request.is("application/x-www-form-urlencoded") ? response.redirect(303, returnTo) : response.status(202).json({ job });
     } catch (error) { next(error); }
   });
 
@@ -305,7 +321,9 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
       const back = browserPage.parentDriveId ? `<a href="?parent=${encodeURIComponent(browserPage.parentDriveId)}">← Parent folder</a>` : `<a href="/drive/folders">← Photo folders</a>`;
       const previous = pageNumber > 1 ? `<a href="?parent=${encodeURIComponent(parent)}&page=${pageNumber - 1}">Previous</a>` : "";
       const following = pageNumber * pageSize < browserPage.total ? `<a href="?parent=${encodeURIComponent(parent)}&page=${pageNumber + 1}">Next</a>` : "";
-      return response.type("html").send(page(`<div class="browser-head"><div><p class="eyebrow">Photo browser</p><h1>${escapeHtml(browserPage.parentName)}</h1></div><p>${back}</p></div>${needsFolderIndex ? '<p>This collection was scanned before folder navigation was added. Return to Photo folders and run <strong>Rescan and reconcile</strong> once.</p>' : `<p>${browserPage.total} items</p><div class="photo-grid">${cards || "<p>This folder is empty.</p>"}</div><p class="pager">${previous} ${following}</p>`}<dialog id="photo-viewer" data-folder-id="${folderId}"><button class="viewer-close" aria-label="Close">×</button><div class="viewer-layout"><section class="viewer-photo"><figure><div class="image-stage"><img alt=""><canvas class="subject-canvas"></canvas></div><figcaption class="viewer-caption"></figcaption></figure><button class="viewer-prev" aria-label="Previous photo">←</button><button class="viewer-next" aria-label="Next photo">→</button></section><form class="viewer-text"><p class="eyebrow">About this photograph</p><h2 class="viewer-name"></h2><label>Caption<input required name="caption" maxlength="500" placeholder="A short description"></label><label>Notes<textarea name="notes" maxlength="50000" rows="8" placeholder="Details about this particular photograph…"></textarea></label><div><button type="submit">Save text</button> <span class="viewer-status muted" role="status"></span></div><section class="subjects"><div class="subjects-head"><strong>People and things</strong><button class="secondary mark-subject" type="button">Mark a subject</button></div><p class="subject-help muted">Draw a box around a face, person, or thing.</p><div class="subject-editor" hidden><label>Type<select class="subject-type"><option value="person">Person</option><option value="thing">Thing</option></select></label><label class="person-choice-label">Known as<input class="person-choice" list="person-aliases" maxlength="200" placeholder="Search aliases or enter a new person"><datalist id="person-aliases"></datalist></label><label class="thing-label" hidden>Thing<input class="thing-name" maxlength="200" placeholder="For example: wedding cake"></label><div><button class="save-subject" type="button">Save subject</button> <button class="secondary cancel-subject" type="button">Cancel</button></div><p class="subject-status muted" role="status"></p></div><ul class="subject-list"></ul></section></form></div></dialog>${viewerScript()}`));
+      const subtreeScan = parent !== folder.driveFolderId ? `<form class="inline" method="post" action="/api/drive/folders/${folderId}/rescan-subtree"><input type="hidden" name="driveFolderId" value="${escapeHtml(parent)}"><button class="secondary" type="submit">Rescan this folder</button></form>` : "";
+      const queued = request.query.scan === "queued" ? '<p class="muted">This folder scan was queued. Progress is available on <a href="/drive/folders">Photo folders</a>.</p>' : "";
+      return response.type("html").send(page(`<div class="browser-head"><div><p class="eyebrow">Photo browser</p><h1>${escapeHtml(browserPage.parentName)}</h1></div><p>${back}</p></div>${queued}${subtreeScan}${needsFolderIndex ? '<p>This collection was scanned before folder navigation was added. Return to Photo folders and run <strong>Rescan and reconcile</strong> once.</p>' : `<p>${browserPage.total} items</p><div class="photo-grid">${cards || "<p>This folder is empty.</p>"}</div><p class="pager">${previous} ${following}</p>`}<dialog id="photo-viewer" data-folder-id="${folderId}"><button class="viewer-close" aria-label="Close">×</button><div class="viewer-layout"><section class="viewer-photo"><figure><div class="image-stage"><img alt=""><canvas class="subject-canvas"></canvas></div><figcaption class="viewer-caption"></figcaption></figure><button class="viewer-prev" aria-label="Previous photo">←</button><button class="viewer-next" aria-label="Next photo">→</button></section><form class="viewer-text"><p class="eyebrow">About this photograph</p><h2 class="viewer-name"></h2><label>Caption<input required name="caption" maxlength="500" placeholder="A short description"></label><label>Notes<textarea name="notes" maxlength="50000" rows="8" placeholder="Details about this particular photograph…"></textarea></label><div><button type="submit">Save text</button> <span class="viewer-status muted" role="status"></span></div><section class="subjects"><div class="subjects-head"><strong>People and things</strong><button class="secondary mark-subject" type="button">Mark a subject</button></div><p class="subject-help muted">Draw a box around a face, person, or thing.</p><div class="subject-editor" hidden><label>Type<select class="subject-type"><option value="person">Person</option><option value="thing">Thing</option></select></label><label class="person-choice-label">Known as<input class="person-choice" list="person-aliases" maxlength="200" placeholder="Search aliases or enter a new person"><datalist id="person-aliases"></datalist></label><label class="thing-label" hidden>Thing<input class="thing-name" maxlength="200" placeholder="For example: wedding cake"></label><div><button class="save-subject" type="button">Save subject</button> <button class="secondary cancel-subject" type="button">Cancel</button></div><p class="subject-status muted" role="status"></p></div><ul class="subject-list"></ul></section></form></div></dialog>${viewerScript()}`));
     } catch (error) { next(error); }
   });
 

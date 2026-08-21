@@ -36,6 +36,7 @@ export type IndexedDriveItem = {
   sizeBytes: number | null;
 };
 export type IndexedDriveFolder = { driveFolderId: string; parentDriveId: string; name: string; relativePath: string; modifiedTime: string | null };
+export type IndexedDriveFolderDetails = IndexedDriveFolder;
 export type DriveScanJob = { id: string; status: "pending" | "running" | "completed" | "failed"; foldersScanned: number; itemsDiscovered: number; matchedItems: number | null; unmatchedItems: number | null; ambiguousItems: number | null; errorMessage: string | null };
 export type ReconciliationReviewItem = { name: string; relativePath: string; mimeType: string; sizeBytes: number | null; matchMethod: string | null; legacyPaths: string[] };
 export type DriveBrowserItem = { driveFileId: string; name: string; caption: string | null; mimeType: string; modifiedTime: string | null; sizeBytes: number | null; matched: boolean };
@@ -64,9 +65,11 @@ export interface DataStore {
   getAttachedFolder(userId: string, folderId: string): Promise<AttachedFolder | null>;
   detachDriveFolder(userId: string, folderId: string): Promise<boolean>;
   replaceIndexedDriveItems(userId: string, folderId: string, items: IndexedDriveItem[], folders?: IndexedDriveFolder[]): Promise<number>;
+  getIndexedDriveFolder(userId: string, folderId: string, driveFolderId: string): Promise<IndexedDriveFolderDetails | null>;
+  replaceIndexedDriveSubtree(userId: string, folderId: string, driveFolderId: string, items: IndexedDriveItem[], folders: IndexedDriveFolder[]): Promise<number>;
   countIndexedDriveItems(userId: string, folderId: string): Promise<number>;
   countLegacyDriveMatches(userId: string, folderId: string): Promise<number>;
-  reconcileLegacyDriveItems(userId: string, folderId: string): Promise<{ matched: number; exactPath: number; uniqueNameSize: number; unmatched: number; ambiguous: number }>;
+  reconcileLegacyDriveItems(userId: string, folderId: string, relativePathPrefix?: string): Promise<{ matched: number; exactPath: number; uniqueNameSize: number; unmatched: number; ambiguous: number }>;
   createDriveScanJob(userId: string, folderId: string): Promise<DriveScanJob>;
   updateDriveScanJob(jobId: string, update: Partial<Omit<DriveScanJob, "id">>): Promise<void>;
   getLatestDriveScanJob(userId: string, folderId: string): Promise<DriveScanJob | null>;
@@ -276,6 +279,57 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       } finally { client.release(); }
     },
 
+    async getIndexedDriveFolder(userId, folderId, driveFolderId) {
+      const result = await pool.query(`
+        SELECT d.drive_folder_id, d.parent_drive_id, d.name, d.relative_path, d.modified_time
+        FROM indexed_drive_folders d JOIN attached_drive_folders f ON f.id=d.attached_folder_id
+        WHERE d.attached_folder_id=$1 AND d.drive_folder_id=$2 AND f.user_id=$3
+      `, [folderId, driveFolderId, userId]);
+      const row = result.rows[0];
+      return row ? { driveFolderId: row.drive_folder_id, parentDriveId: row.parent_drive_id, name: row.name, relativePath: row.relative_path, modifiedTime: row.modified_time?.toISOString() ?? null } : null;
+    },
+
+    async replaceIndexedDriveSubtree(userId, folderId, driveFolderId, items, folders) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const target = await client.query(`
+          SELECT d.drive_folder_id FROM indexed_drive_folders d
+          JOIN attached_drive_folders f ON f.id=d.attached_folder_id
+          WHERE d.attached_folder_id=$1 AND d.drive_folder_id=$2 AND f.user_id=$3 FOR UPDATE OF f
+        `, [folderId, driveFolderId, userId]);
+        if (!target.rowCount) throw new Error("Indexed folder not found");
+        const descendants = await client.query<{ drive_folder_id: string }>(`
+          WITH RECURSIVE tree AS (
+            SELECT drive_folder_id FROM indexed_drive_folders WHERE attached_folder_id=$1 AND drive_folder_id=$2
+            UNION ALL
+            SELECT child.drive_folder_id FROM indexed_drive_folders child JOIN tree parent ON child.parent_drive_id=parent.drive_folder_id
+            WHERE child.attached_folder_id=$1
+          ) SELECT drive_folder_id FROM tree
+        `, [folderId, driveFolderId]);
+        const driveIds = descendants.rows.map((row) => row.drive_folder_id);
+        await client.query("DELETE FROM indexed_drive_items WHERE attached_folder_id=$1 AND parent_drive_id=ANY($2::text[])", [folderId, driveIds]);
+        await client.query("DELETE FROM indexed_drive_folders WHERE attached_folder_id=$1 AND drive_folder_id=ANY($2::text[]) AND drive_folder_id<>$3", [folderId, driveIds, driveFolderId]);
+        for (const indexedFolder of folders) await client.query(`
+          INSERT INTO indexed_drive_folders (attached_folder_id, drive_folder_id, parent_drive_id, name, relative_path, modified_time)
+          VALUES ($1,$2,$3,$4,$5,$6)
+        `, [folderId, indexedFolder.driveFolderId, indexedFolder.parentDriveId, indexedFolder.name, indexedFolder.relativePath, indexedFolder.modifiedTime]);
+        for (const item of items) await client.query(`
+          INSERT INTO indexed_drive_items (attached_folder_id, drive_file_id, parent_drive_id, name, mime_type, relative_path, md5_checksum, modified_time, size_bytes)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        `, [folderId, item.driveFileId, item.parentDriveId, item.name, item.mimeType, item.relativePath, item.md5Checksum, item.modifiedTime, item.sizeBytes]);
+        await client.query(`
+          INSERT INTO photo_records (attached_folder_id, drive_file_id, caption, notes, created_by, updated_by)
+          SELECT i.attached_folder_id, i.drive_file_id, i.name, '', $2, $2 FROM indexed_drive_items i
+          WHERE i.attached_folder_id=$1 AND i.parent_drive_id=ANY($3::text[]) AND i.mime_type LIKE 'image/%'
+          ON CONFLICT (attached_folder_id, drive_file_id) DO NOTHING
+        `, [folderId, userId, [driveFolderId, ...folders.map((folder) => folder.driveFolderId)]]);
+        await client.query("COMMIT");
+        return items.length;
+      } catch (error) { await client.query("ROLLBACK"); throw error; }
+      finally { client.release(); }
+    },
+
     async countIndexedDriveItems(userId, folderId) {
       const result = await pool.query<{ count: string }>(`
         SELECT count(*)
@@ -296,17 +350,19 @@ export function createPostgresDataStore(pool: Pool): DataStore {
       return Number(result.rows[0]?.count ?? 0);
     },
 
-    async reconcileLegacyDriveItems(userId, folderId) {
+    async reconcileLegacyDriveItems(userId, folderId, relativePathPrefix) {
       const indexed = await pool.query<{ id: string; name: string; relative_path: string; size_bytes: string | null }>(`
         SELECT i.id, i.name, i.relative_path, i.size_bytes
         FROM indexed_drive_items i JOIN attached_drive_folders f ON f.id=i.attached_folder_id
-        WHERE f.user_id=$1 AND f.id=$2 ORDER BY i.id
-      `, [userId, folderId]);
+        WHERE f.user_id=$1 AND f.id=$2 AND ($3::text IS NULL OR i.relative_path LIKE $3 || '/%') ORDER BY i.id
+      `, [userId, folderId, relativePathPrefix ?? null]);
       const client = await pool.connect();
       let exactPath = 0, uniqueNameSize = 0, unmatched = 0, ambiguous = 0;
       try {
         await client.query("BEGIN");
-        await client.query("DELETE FROM legacy_drive_matches WHERE indexed_item_id IN (SELECT id FROM indexed_drive_items WHERE attached_folder_id=$1)", [folderId]);
+        await client.query(`DELETE FROM legacy_drive_matches WHERE indexed_item_id IN (
+          SELECT id FROM indexed_drive_items WHERE attached_folder_id=$1 AND ($2::text IS NULL OR relative_path LIKE $2 || '/%')
+        )`, [folderId, relativePathPrefix ?? null]);
         for (const item of indexed.rows) {
           const candidates = await client.query<{ id: number; original_path: string | null }>(`
             SELECT id, original_path FROM legacy_catalog.files

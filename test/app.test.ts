@@ -35,6 +35,8 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async getAttachedFolder(_userId, folderId) { return folders.find((folder) => folder.id === folderId) ?? null; },
     async detachDriveFolder(_userId, folderId) { const index = folders.findIndex((folder) => folder.id === folderId); if (index < 0) return false; folders.splice(index, 1); return true; },
     async replaceIndexedDriveItems(_userId, _folderId, items) { return items.length; },
+    async getIndexedDriveFolder(_userId, _folderId, driveFolderId) { return driveFolderId === "subfolder-1" ? { driveFolderId, parentDriveId: "drive-folder-1", name: "1940s", relativePath: "1940s", modifiedTime: null } : null; },
+    async replaceIndexedDriveSubtree(_userId, _folderId, _driveFolderId, items) { return items.length; },
     async countIndexedDriveItems() { return 0; },
     async countLegacyDriveMatches() { return 0; },
     async reconcileLegacyDriveItems() { return { matched: 0, exactPath: 0, uniqueNameSize: 0, unmatched: 0, ambiguous: 0 }; },
@@ -373,6 +375,14 @@ test("members can browse indexed folders and open image cards", () => {
     assert.match(html, /People &amp; family/);
     assert.match(html, /people\?person=/);
     for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new Function(script[1] ?? ""));
+    data.getDriveBrowserPage = async () => ({ parentName: "1940s", parentDriveId: "drive-folder-1", total: 0, items: [] });
+    const subfolder = await fetch(`${origin}/drive/folders/folder-1/browse?parent=subfolder-1`, { headers: { cookie: sessionCookie } });
+    const subfolderHtml = await subfolder.text();
+    assert.match(subfolderHtml, /Rescan this folder/);
+    assert.match(subfolderHtml, /name="driveFolderId" value="subfolder-1"/);
+    const targeted = await fetch(`${origin}/api/drive/folders/folder-1/rescan-subtree`, { method: "POST", redirect: "manual", headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" }, body: "driveFolderId=subfolder-1" });
+    assert.equal(targeted.status, 303);
+    assert.match(targeted.headers.get("location") ?? "", /parent=subfolder-1&scan=queued/);
   }, { data, identity });
 });
 
