@@ -489,6 +489,19 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
     catch (error) { next(error); }
   });
 
+  app.get("/admin/genealogy.csv", requireAdministrator, async (request, response, next) => {
+    try {
+      const rows = await data!.listGenealogyExport(request.session.userId!);
+      const header = ["Person ID", "Primary name", "Aliases", "Parent IDs", "Parents", "Spouse IDs", "Spouses", "Child IDs", "Children", "Identified photo count"];
+      const records = rows.map((row) => [row.personId, row.primaryName, row.aliases.join(" | "), row.parentIds.join(" | "), row.parents.join(" | "), row.spouseIds.join(" | "), row.spouses.join(" | "), row.childIds.join(" | "), row.children.join(" | "), row.identifiedPhotoCount]);
+      const csv = "\uFEFF" + [header, ...records].map((record) => record.map(csvCell).join(",")).join("\r\n") + "\r\n";
+      const date = new Date().toISOString().slice(0, 10);
+      response.setHeader("content-type", "text/csv; charset=utf-8");
+      response.setHeader("content-disposition", `attachment; filename="family-genealogy-${date}.csv"`);
+      response.send(csv);
+    } catch (error) { next(error); }
+  });
+
   app.get("/admin/activity", requireAdministrator, async (_request, response, next) => {
     try {
       const activity = await data!.listRecentActivity(200);
@@ -514,7 +527,7 @@ export function createApp(config: AppConfig, supplied: AppDependencies = {}) {
     try {
       const members = await data!.listApplicationMembers();
       const rows = members.map((member) => `<tr><td>${escapeHtml(member.email)}</td><td>${member.role}</td><td>${member.joined ? "Joined" : "Invited"}</td></tr>`).join("");
-      response.type("html").send(page(`<p class="eyebrow">Administration</p><h1>Application members</h1><p>Only listed email addresses may enter after Google verifies their identity.</p><form method="post" action="/api/admin/members"><label>Email <input required type="email" name="email"></label><label>Access <select name="role"><option value="member">Member</option><option value="administrator">Administrator</option></select></label><button type="submit">Add member</button></form><table><thead><tr><th>Email</th><th>Access</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table><p><a href="/app">Back to archive</a></p>`));
+      response.type("html").send(page(`<p class="eyebrow">Administration</p><h1>Application members</h1><p>Only listed email addresses may enter after Google verifies their identity.</p><p><a class="button secondary" href="/admin/genealogy.csv">Export genealogy CSV</a></p><form method="post" action="/api/admin/members"><label>Email <input required type="email" name="email"></label><label>Access <select name="role"><option value="member">Member</option><option value="administrator">Administrator</option></select></label><button type="submit">Add member</button></form><table><thead><tr><th>Email</th><th>Access</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table><p><a href="/app">Back to archive</a></p>`));
     } catch (error) { next(error); }
   });
 
@@ -629,6 +642,12 @@ const requestedPhoto=new URLSearchParams(location.search).get("photo"),requested
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]!);
+}
+
+function csvCell(value: string | number) {
+  let text = String(value);
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
 }
 
 function scanStatus(job: DriveScanJob | null) {

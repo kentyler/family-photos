@@ -59,6 +59,7 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async addFamilyRelationship() { return true; },
     async recordActivity() { return true; },
     async listRecentActivity() { return []; },
+    async listGenealogyExport() { return [{ personId: "person-1", primaryName: "Claire Atwood", aliases: ["Claire Atwood", "Grandma Claire"], parentIds: ["person-2"], parents: ["Mary Atwood"], spouseIds: ["person-3"], spouses: ["Larry Atwood"], childIds: ["person-4"], children: ["June Atwood"], identifiedPhotoCount: 4 }]; },
     async listArchives(userId) { return userId === "user-1" ? [{ id: "11111111-1111-4111-8111-111111111111", name: "Tyler Family", role: "owner" }] : []; },
     async getArchive(userId, archiveId) { return userId === "user-1" && archiveId === "11111111-1111-4111-8111-111111111111" ? { id: archiveId, name: "Tyler Family", role: "owner" } : null; },
   };
@@ -215,6 +216,23 @@ test("only administrators can review recent activity", async () => {
     assert.equal((await fetch(`${origin}/api/admin/activity`, { headers: { cookie: sessionCookie } })).status, 403);
   }, { data: fakeData("member"), identity });
 });
+
+test("administrators can export re-importable genealogy CSV with stable IDs", () => withServer(async (origin) => {
+  const sessionCookie = await signIn(origin);
+  const response = await fetch(`${origin}/admin/genealogy.csv`, { headers: { cookie: sessionCookie } });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/csv/);
+  assert.match(response.headers.get("content-disposition") ?? "", /family-genealogy-\d{4}-\d{2}-\d{2}\.csv/);
+  const csv = await response.text();
+  assert.match(csv, /^\uFEFF?"Person ID","Primary name","Aliases","Parent IDs","Parents","Spouse IDs","Spouses","Child IDs","Children","Identified photo count"/);
+  assert.match(csv, /"person-1","Claire Atwood"/);
+  assert.match(csv, /"person-2","Mary Atwood"/);
+}, { data: fakeData(), identity }));
+
+test("ordinary members cannot export genealogy CSV", () => withServer(async (origin) => {
+  const sessionCookie = await signIn(origin);
+  assert.equal((await fetch(`${origin}/admin/genealogy.csv`, { headers: { cookie: sessionCookie } })).status, 403);
+}, { data: fakeData("member"), identity }));
 
 test("Drive authorization is separate and stores an encrypted refresh token", () => {
   const data = fakeData();

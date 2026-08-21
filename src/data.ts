@@ -46,6 +46,7 @@ export type PersonSearchResult = { id: string; primaryName: string; aliases: str
 export type FamilyStory = { id: string; title: string; body: string; people: Array<{ id: string; primaryName: string }>; createdAt: string; createdBy: string | null };
 export type ActivityEventType = "login" | "photo_viewed" | "photo_tagged" | "photo_untagged" | "photo_notes_updated";
 export type ActivityEvent = { id: string; eventType: ActivityEventType; userId: string; userName: string; userEmail: string; folderId: string | null; driveFileId: string | null; photoName: string | null; details: Record<string, unknown>; occurredAt: string };
+export type GenealogyExportRow = { personId: string; primaryName: string; aliases: string[]; parentIds: string[]; parents: string[]; spouseIds: string[]; spouses: string[]; childIds: string[]; children: string[]; identifiedPhotoCount: number };
 export type PersonExplorer = { id: string; primaryName: string; aliases: string[]; parents: PersonSearchResult[]; spouses: PersonSearchResult[]; children: PersonSearchResult[]; stories: FamilyStory[]; photos: Array<{ folderId: string; driveFileId: string; parentDriveId: string; name: string; caption: string }> };
 
 export interface DataStore {
@@ -87,6 +88,7 @@ export interface DataStore {
   addFamilyRelationship(userId: string, personId: string, relatedPersonId: string, relationshipType: "spouse" | "parent", dateText: string | null): Promise<boolean>;
   recordActivity(userId: string, eventType: ActivityEventType, folderId?: string, driveFileId?: string, details?: Record<string, unknown>): Promise<boolean>;
   listRecentActivity(limit: number): Promise<ActivityEvent[]>;
+  listGenealogyExport(userId: string): Promise<GenealogyExportRow[]>;
   listArchives(userId: string): Promise<ArchiveMembership[]>;
   getArchive(userId: string, archiveId: string): Promise<ArchiveMembership | null>;
 }
@@ -685,6 +687,41 @@ export function createPostgresDataStore(pool: Pool): DataStore {
         ORDER BY e.occurred_at DESC,e.id DESC LIMIT $1
       `, [Math.max(1, Math.min(limit, 500))]);
       return result.rows.map((row) => ({ id: row.id, eventType: row.event_type, userId: row.user_id, userName: row.display_name, userEmail: row.email, folderId: row.attached_folder_id ?? null, driveFileId: row.drive_file_id ?? null, photoName: row.photo_name ?? null, details: row.details ?? {}, occurredAt: new Date(row.occurred_at).toISOString() }));
+    },
+
+    async listGenealogyExport(userId) {
+      if (await this.getApplicationRole(userId) !== "administrator") return [];
+      const result = await pool.query(`
+        WITH person_names AS (
+          SELECT p.id,
+                 COALESCE(max(a.alias) FILTER (WHERE a.is_primary),min(a.alias)) AS primary_name,
+                 array_agg(a.alias ORDER BY a.is_primary DESC,lower(a.alias)) AS aliases
+          FROM family_people p JOIN family_person_aliases a ON a.person_id=p.id GROUP BY p.id
+        ), identified AS (
+          SELECT r.person_id,r.attached_folder_id,r.drive_file_id FROM photo_subject_regions r
+          UNION
+          SELECT p.id,m.attached_folder_id,i.drive_file_id
+          FROM family_people p
+          JOIN legacy_catalog.photo_people pp ON pp.person_id=p.legacy_person_id
+          JOIN legacy_drive_matches m ON m.legacy_file_id=pp.photo_id
+          JOIN indexed_drive_items i ON i.id=m.indexed_item_id
+        ), photo_counts AS (
+          SELECT x.person_id,count(DISTINCT (x.attached_folder_id,x.drive_file_id))::integer AS photo_count
+          FROM identified x JOIN attached_drive_folders f ON f.id=x.attached_folder_id
+          WHERE f.user_id=$1 GROUP BY x.person_id
+        )
+        SELECT n.id,n.primary_name,n.aliases,
+          COALESCE((SELECT array_agg(parent.id ORDER BY lower(parent.primary_name),parent.id) FROM family_relationships r JOIN person_names parent ON parent.id=r.person_id WHERE r.relationship_type='parent' AND r.related_person_id=n.id),'{}') AS parent_ids,
+          COALESCE((SELECT array_agg(parent.primary_name ORDER BY lower(parent.primary_name)) FROM family_relationships r JOIN person_names parent ON parent.id=r.person_id WHERE r.relationship_type='parent' AND r.related_person_id=n.id),'{}') AS parents,
+          COALESCE((SELECT array_agg(spouse.id ORDER BY lower(spouse.primary_name),spouse.id) FROM family_relationships r JOIN person_names spouse ON spouse.id=CASE WHEN r.person_id=n.id THEN r.related_person_id ELSE r.person_id END WHERE r.relationship_type='spouse' AND (r.person_id=n.id OR r.related_person_id=n.id)),'{}') AS spouse_ids,
+          COALESCE((SELECT array_agg(spouse.primary_name ORDER BY lower(spouse.primary_name)) FROM family_relationships r JOIN person_names spouse ON spouse.id=CASE WHEN r.person_id=n.id THEN r.related_person_id ELSE r.person_id END WHERE r.relationship_type='spouse' AND (r.person_id=n.id OR r.related_person_id=n.id)),'{}') AS spouses,
+          COALESCE((SELECT array_agg(child.id ORDER BY lower(child.primary_name),child.id) FROM family_relationships r JOIN person_names child ON child.id=r.related_person_id WHERE r.relationship_type='parent' AND r.person_id=n.id),'{}') AS child_ids,
+          COALESCE((SELECT array_agg(child.primary_name ORDER BY lower(child.primary_name)) FROM family_relationships r JOIN person_names child ON child.id=r.related_person_id WHERE r.relationship_type='parent' AND r.person_id=n.id),'{}') AS children,
+          COALESCE(pc.photo_count,0) AS photo_count
+        FROM person_names n LEFT JOIN photo_counts pc ON pc.person_id=n.id
+        ORDER BY lower(n.primary_name),n.id
+      `, [userId]);
+      return result.rows.map((row) => ({ personId: row.id, primaryName: row.primary_name, aliases: row.aliases, parentIds: row.parent_ids, parents: row.parents, spouseIds: row.spouse_ids, spouses: row.spouses, childIds: row.child_ids, children: row.children, identifiedPhotoCount: Number(row.photo_count) }));
     },
 
     async listArchives(userId) {

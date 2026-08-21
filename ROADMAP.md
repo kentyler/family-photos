@@ -203,6 +203,7 @@ These may be useful later, but they must build on the photo-person-family-tree l
 | 2026-08-18 | Key editable photo records by attached folder and Google Drive file ID rather than an ephemeral scan row. | Drive IDs survive ordinary rename and move operations, and scan replacement must not erase family-contributed text. |
 | 2026-08-20 | Keep an append-only member activity stream for logins and photo views, tags, and notes updates. | The archive should retain provenance and allow administrators to understand participation without collecting invasive browser or network identifiers. |
 | 2026-08-20 | Interpret legacy relationship types from the subject person's perspective when normalizing parent/child links. | In the legacy data, `child` describes the related person as the subject's child, while `parent`, `father`, and `mother` describe the related person as the subject's parent. |
+| 2026-08-20 | Export normalized genealogy as an administrator-only UTF-8 CSV with canonical and related-person UUIDs. | Stable identifiers make names and relationships unambiguous and provide a safe foundation for a separately validated re-import workflow. |
 | 2026-08-18 | Normalize preserved and newly entered family relationships into one application-owned relationship table. | One authoritative model prevents legacy and new marriages or parent-child links from diverging while retaining source provenance. |
 
 ## Working agreement for maintaining this file
