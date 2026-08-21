@@ -44,7 +44,7 @@ export type PersonAliasChoice = { personId: string; aliasId: string; alias: stri
 export type PhotoSubjectRegion = { id: string; subjectType: "person" | "thing"; personId: string | null; aliasId: string | null; label: string; x: number; y: number; width: number; height: number; createdBy: string; createdAt: string };
 export type PersonSearchResult = { id: string; primaryName: string; aliases: string[]; relationshipId?: string; relationshipDate?: string | null };
 export type FamilyStory = { id: string; title: string; body: string; people: Array<{ id: string; primaryName: string }>; createdAt: string; createdBy: string | null };
-export type ActivityEventType = "login" | "photo_viewed" | "photo_tagged" | "photo_untagged" | "photo_notes_updated" | "family_person_created" | "family_alias_added" | "family_relationship_added" | "family_relationship_removed";
+export type ActivityEventType = "login" | "photo_viewed" | "photo_tagged" | "photo_untagged" | "photo_notes_updated" | "family_person_created" | "family_alias_added" | "family_alias_updated" | "family_relationship_added" | "family_relationship_removed";
 export type ActivityEvent = { id: string; eventType: ActivityEventType; userId: string; userName: string; userEmail: string; folderId: string | null; driveFileId: string | null; photoName: string | null; personId: string | null; personName: string | null; details: Record<string, unknown>; occurredAt: string };
 export type GenealogyExportRow = { personId: string; primaryName: string; aliases: string[]; parentIds: string[]; parents: string[]; spouseIds: string[]; spouses: string[]; childIds: string[]; children: string[]; identifiedPhotoCount: number };
 export type PersonExplorer = { id: string; primaryName: string; aliases: string[]; parents: PersonSearchResult[]; spouses: PersonSearchResult[]; children: PersonSearchResult[]; stories: FamilyStory[]; photos: Array<{ folderId: string; driveFileId: string; parentDriveId: string; name: string; caption: string }> };
@@ -79,6 +79,7 @@ export interface DataStore {
   listPersonAliasChoices(userId: string): Promise<PersonAliasChoice[]>;
   createPersonWithAlias(userId: string, alias: string): Promise<PersonAliasChoice>;
   addPersonAlias(userId: string, personId: string, alias: string): Promise<PersonAliasChoice | null>;
+  updatePersonAlias(userId: string, personId: string, aliasId: string, alias: string): Promise<PersonAliasChoice | null>;
   createPhotoSubjectRegion(userId: string, folderId: string, driveFileId: string, subjectType: "person" | "thing", label: string | null, personId: string | null, aliasId: string | null, x: number, y: number, width: number, height: number): Promise<PhotoSubjectRegion | null>;
   deletePhotoSubjectRegion(userId: string, folderId: string, driveFileId: string, regionId: string): Promise<boolean>;
   searchPeople(userId: string, query: string, limit: number): Promise<PersonSearchResult[]>;
@@ -513,6 +514,18 @@ export function createPostgresDataStore(pool: Pool): DataStore {
         ON CONFLICT (person_id, alias) DO UPDATE SET alias=EXCLUDED.alias
         RETURNING id, person_id, alias, is_primary
       `, [personId, alias]);
+      const row = result.rows[0];
+      return row ? { personId: row.person_id, aliasId: row.id, alias: row.alias, isPrimary: row.is_primary } : null;
+    },
+
+    async updatePersonAlias(userId, personId, aliasId, alias) {
+      if (!await this.getApplicationRole(userId)) return null;
+      const result = await pool.query(`
+        UPDATE family_person_aliases SET alias=$3
+        WHERE person_id=$1 AND id=$2
+          AND EXISTS (SELECT 1 FROM family_people WHERE id=$1)
+        RETURNING id, person_id, alias, is_primary
+      `, [personId, aliasId, alias]);
       const row = result.rows[0];
       return row ? { personId: row.person_id, aliasId: row.id, alias: row.alias, isPrimary: row.is_primary } : null;
     },

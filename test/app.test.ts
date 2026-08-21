@@ -50,6 +50,7 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async listPersonAliasChoices() { return [{ personId: "person-1", aliasId: "alias-1", alias: "Grandma Claire", isPrimary: false }]; },
     async createPersonWithAlias(_userId, alias) { return { personId: "person-2", aliasId: "alias-2", alias, isPrimary: true }; },
     async addPersonAlias(_userId, personId, alias) { return { personId, aliasId: "alias-3", alias, isPrimary: false }; },
+    async updatePersonAlias(_userId, personId, aliasId, alias) { return personId === "person-1" ? { personId, aliasId, alias, isPrimary: aliasId === "alias-primary" } : null; },
     async createPhotoSubjectRegion(_userId, _folderId, _fileId, subjectType, label, personId, aliasId, x, y, width, height) { return { id: "region-1", subjectType, personId, aliasId, label: label ?? "Grandma Claire", x, y, width, height, createdBy: "Ken", createdAt: "2026-08-18T00:00:00.000Z" }; },
     async deletePhotoSubjectRegion() { return true; },
     async searchPeople(_userId, query) { return query ? [{ id: "person-1", primaryName: "Claire Atwood", aliases: ["Claire Atwood", "Grandma Claire"] }] : []; },
@@ -408,6 +409,9 @@ test("members can create person aliases and mark people or things in a photo", (
     const addedAlias = await fetch(`${origin}/api/people/person-1/aliases`, { method: "POST", headers: { cookie: sessionCookie, "content-type": "application/json" }, body: JSON.stringify({ alias: "Claire" }) });
     assert.equal(addedAlias.status, 201);
     assert.deepEqual(await addedAlias.json(), { personId: "person-1", aliasId: "alias-3", alias: "Claire", isPrimary: false });
+    const updatedAlias = await fetch(`${origin}/api/people/person-1/aliases/alias-1`, { method: "PATCH", headers: { cookie: sessionCookie, "content-type": "application/json" }, body: JSON.stringify({ alias: "Grandma C" }) });
+    assert.equal(updatedAlias.status, 200);
+    assert.deepEqual(await updatedAlias.json(), { personId: "person-1", aliasId: "alias-1", alias: "Grandma C", isPrimary: false });
     const marked = await fetch(`${origin}/api/drive/folders/folder-1/photos/photo-1/subjects`, { method: "POST", headers: { cookie: sessionCookie, "content-type": "application/json" }, body: JSON.stringify({ subjectType: "person", personId: "person-1", aliasId: "alias-1", x: 0.1, y: 0.2, width: 0.3, height: 0.4 }) });
     assert.equal(marked.status, 201);
     assert.deepEqual(await marked.json(), { id: "region-1", subjectType: "person", personId: "person-1", aliasId: "alias-1", label: "Grandma Claire", x: 0.1, y: 0.2, width: 0.3, height: 0.4, createdBy: "Ken", createdAt: "2026-08-18T00:00:00.000Z" });
@@ -430,6 +434,8 @@ test("members can search people and open the genealogy explorer", () => {
     assert.match(html, /Photo folders/);
     assert.match(html, /Add marriage/);
     assert.match(html, /Add child/);
+    assert.match(html, /Edit names and aliases/);
+    assert.match(html, /method:\"PATCH\"/);
     const relationship = await fetch(`${origin}/api/people/person-1/relationships`, { method: "POST", headers: { cookie: sessionCookie, "content-type": "application/json" }, body: JSON.stringify({ relationshipType: "spouse", relatedPersonId: "person-2", dateText: "June 1952" }) });
     assert.equal(relationship.status, 201);
     assert.match(html, /View →/);
