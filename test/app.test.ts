@@ -57,6 +57,7 @@ function fakeData(applicationRole: "administrator" | "member" = "administrator")
     async listFamilyStories() { return [{ id: "story-existing", title: "Lake days", body: "A family memory.", people: [{ id: "person-1", primaryName: "Claire Atwood" }], createdAt: "2026-08-18T00:00:00.000Z", createdBy: "Ken" }]; },
     async createFamilyStory(_userId, title, body, personIds) { return { id: "story-1", title, body, people: personIds.map((id) => ({ id, primaryName: "Claire Atwood" })), createdAt: "2026-08-19T00:00:00.000Z", createdBy: "Ken" }; },
     async addFamilyRelationship() { return true; },
+    async deleteFamilyRelationship() { return true; },
     async recordActivity() { return true; },
     async listRecentActivity() { return []; },
     async listGenealogyExport() { return [{ personId: "person-1", primaryName: "Claire Atwood", aliases: ["Claire Atwood", "Grandma Claire"], parentIds: ["person-2"], parents: ["Mary Atwood"], spouseIds: ["person-3"], spouses: ["Larry Atwood"], childIds: ["person-4"], children: ["June Atwood"], identifiedPhotoCount: 4 }]; },
@@ -158,7 +159,10 @@ test("successful logins and photo interactions are recorded", () => {
     const headers = { cookie: sessionCookie };
     assert.equal((await fetch(`${origin}/api/drive/folders/folder-1/photos/photo-1/view`, { method: "POST", headers })).status, 204);
     assert.equal((await fetch(`${origin}/api/drive/folders/folder-1/photos/photo-1/text`, { method: "PUT", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ caption: "At the lake", notes: "Summer 1952" }) })).status, 200);
-    assert.deepEqual(events.map((event) => event.eventType), ["login", "photo_viewed", "photo_notes_updated"]);
+    assert.equal((await fetch(`${origin}/api/people`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ alias: "Mary Atwood" }) })).status, 201);
+    assert.equal((await fetch(`${origin}/api/people/person-1/relationships`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ relationshipType: "child", relatedPersonId: "person-2" }) })).status, 201);
+    assert.equal((await fetch(`${origin}/api/people/person-1/relationships/relationship-1`, { method: "DELETE", headers })).status, 204);
+    assert.deepEqual(events.map((event) => event.eventType), ["login", "photo_viewed", "photo_notes_updated", "family_person_created", "family_relationship_added", "family_relationship_removed"]);
   }, { data, identity });
 });
 
@@ -437,7 +441,9 @@ test("members can search people and open the genealogy explorer", () => {
 test("the family explorer can add a parent with the correct relationship direction", () => {
   const data = fakeData();
   let relationship: { parentId: string; childId: string; type: string } | undefined;
+  let deleted: { personId: string; relationshipId: string } | undefined;
   data.addFamilyRelationship = async (_userId, parentId, childId, type) => { relationship = { parentId, childId, type }; return true; };
+  data.deleteFamilyRelationship = async (_userId, personId, relationshipId) => { deleted = { personId, relationshipId }; return true; };
   return withServer(async (origin) => {
     const sessionCookie = await signIn(origin);
     const explorer = await fetch(`${origin}/people`, { headers: { cookie: sessionCookie } });
@@ -449,6 +455,9 @@ test("the family explorer can add a parent with the correct relationship directi
     });
     assert.equal(saved.status, 201);
     assert.deepEqual(relationship, { parentId: "person-2", childId: "person-1", type: "parent" });
+    const removed = await fetch(`${origin}/api/people/person-1/relationships/relationship-1`, { method: "DELETE", headers: { cookie: sessionCookie } });
+    assert.equal(removed.status, 204);
+    assert.deepEqual(deleted, { personId: "person-1", relationshipId: "relationship-1" });
   }, { data, identity });
 });
 
@@ -463,6 +472,8 @@ test("members can open a collapsible family tree linked to genealogy and photos"
   assert.match(html, /branch\("Parents"/);
   assert.match(html, /branch\("Marriages"/);
   assert.match(html, /branch\("Children"/);
+  assert.match(html, /function addEditor/);
+  assert.match(html, /Remove this relationship/);
   for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new Function(script[1] ?? ""));
 }, { data: fakeData(), identity }));
 
